@@ -82,7 +82,16 @@ export function startREPL(): void {
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) {
-            showPrompt();
+            // Move up past the bottom border + the newline readline added, redraw in-place
+            process.stdout.write(`\x1b[${lastPromptCursorRows + 2}A\r\x1b[J`);
+            drawInputDivider(swarmMode);
+            if (refreshLine) {
+                refreshLine();
+                renderPromptChrome();
+            } else {
+                rl.prompt(true);
+                renderPromptChrome();
+            }
             return;
         }
 
@@ -325,6 +334,10 @@ async function handleSlashCommand(input: string, rl: readline.Interface): Promis
             console.log(c.gray('\n  Goodbye!\n'));
             process.exit(0);
 
+        case '/uninstall':
+            await handleUninstall(rl);
+            break;
+
         case '/clear':
             messageHistory = [];
             console.clear();
@@ -459,6 +472,7 @@ ${DIVIDER}
   ${c.bold('General')}
     ${c.purple('/status')}                ${c.gray('Show current configuration')}
     ${c.purple('/help')}                  ${c.gray('Show this help')}
+    ${c.purple('/uninstall')}             ${c.gray('Uninstall Velix CLI from your system')}
     ${c.purple('/exit')}                  ${c.gray('Quit Velix CLI')}
 `);
 }
@@ -931,6 +945,37 @@ function compactHistory(): void {
     const dropped = messageHistory.length - 4;
     messageHistory = kept;
     console.log(c.green(`\n  Compacted history: dropped ${dropped} older messages, kept last 4.`));
+}
+
+async function handleUninstall(rl: readline.Interface): Promise<void> {
+    const isBrew = execShell('brew list velix 2>/dev/null', process.cwd()).exitCode === 0;
+    const uninstallCmd = isBrew
+        ? 'brew uninstall velix && brew untap cliclye/velix'
+        : 'npm uninstall -g velix-cli';
+
+    console.log(`\n${c.bold('  Uninstall Velix CLI')}`);
+    console.log(DIVIDER);
+    console.log(`  ${c.gray('Detected:')} ${isBrew ? 'Homebrew' : 'npm'}`);
+    console.log(`  ${c.gray('Command:')}  ${c.cyan(uninstallCmd)}`);
+    console.log();
+
+    await new Promise<void>((resolve) => {
+        rl.question(`  ${c.yellow('Uninstall Velix? (y/N): ')}`, (answer) => {
+            if (answer.trim().toLowerCase() === 'y') {
+                console.log(c.gray('\n  Running uninstall...'));
+                const result = execShell(uninstallCmd, process.cwd());
+                if (result.exitCode === 0) {
+                    console.log(c.green('\n  Velix CLI uninstalled successfully. Goodbye!'));
+                    process.exit(0);
+                } else {
+                    console.log(c.red(`\n  Uninstall failed.\n  ${result.stderr || result.stdout}`));
+                }
+            } else {
+                console.log(c.gray('\n  Uninstall cancelled.'));
+            }
+            resolve();
+        });
+    });
 }
 
 function handleInit(): void {
