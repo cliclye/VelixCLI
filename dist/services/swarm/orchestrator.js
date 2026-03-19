@@ -27,6 +27,8 @@ const DEFAULT_SWARM_CONFIG = {
     plannerModel: '',
     coordinatorModel: '',
     workerModel: '',
+    coordinatorProvider: '',
+    workerProvider: '',
     workerCLI: 'claude',
     buildCommand: '',
     testCommand: '',
@@ -57,6 +59,44 @@ export class SwarmOrchestrator {
     }
     getState() { return this.state; }
     getCurrentTask() { return this.currentTask; }
+    /**
+     * Get all agents for the current task (allows messaging individual agents).
+     */
+    getAgents() {
+        return this.currentTask?.agents ?? [];
+    }
+    /**
+     * Send a direct message to a specific agent by ID or role.
+     * The agent responds in the context of its role and current task.
+     */
+    async messageAgent(agentIdentifier, message) {
+        const agents = this.getAgents();
+        const agent = agents.find(a => a.id === agentIdentifier
+            || a.role === agentIdentifier
+            || a.id.includes(agentIdentifier));
+        if (!agent) {
+            const available = agents.map(a => `${a.role} (${a.id})`).join(', ');
+            throw new Error(`Agent not found: "${agentIdentifier}". Available: ${available || 'none'}`);
+        }
+        const velixConfig = loadConfig();
+        const apiKey = getApiKey();
+        if (!apiKey)
+            throw new Error('No API key configured');
+        const roleDef = getRoleDefinition(agent.role);
+        const systemPrompt = `${roleDef.systemPrompt}\n\nYou are agent "${agent.id}" with role "${agent.role}".`
+            + (agent.currentTask ? `\nYour current/last task: ${agent.currentTask}` : '')
+            + (agent.output ? `\nYour last output summary: ${agent.output.slice(0, 500)}` : '')
+            + '\n\nThe user (operator) is messaging you directly. Respond helpfully about your work, findings, or status.';
+        const response = await this.send({
+            text: message,
+            system: systemPrompt,
+            provider: velixConfig.provider,
+            model: this.resolveModel('worker', velixConfig.model),
+            apiKey,
+            signal: this.abortController?.signal,
+        });
+        return response;
+    }
     setState(state) {
         this.state = state;
         this.callbacks.onStateChange(state);
@@ -127,10 +167,8 @@ export class SwarmOrchestrator {
      */
     async planTask(goal, constraints) {
         const plannerRole = getRoleDefinition('planner');
+        const { provider, apiKey } = this.resolveProviderAndKey('planner');
         const velixConfig = loadConfig();
-        const apiKey = getApiKey();
-        if (!apiKey)
-            throw new Error('No API key configured. Run /config to set one.');
         // Gather project context
         let projectContext = '';
         try {
@@ -146,7 +184,7 @@ export class SwarmOrchestrator {
         const response = await this.send({
             text: prompt,
             system: plannerRole.systemPrompt,
-            provider: velixConfig.provider,
+            provider,
             model: this.resolveModel('planner', velixConfig.model),
             apiKey,
             signal: this.abortController?.signal,
@@ -249,6 +287,26 @@ export class SwarmOrchestrator {
             return this.config.coordinatorModel || this.config.plannerModel || fallback;
         return this.config.workerModel || fallback;
     }
+    /**
+     * Resolve the provider and API key for a given agent kind.
+     * Allows coordinator and workers to run on different AI providers.
+     */
+    resolveProviderAndKey(kind) {
+        const velixConfig = loadConfig();
+        let providerOverride = '';
+        if (kind === 'planner' || kind === 'coordinator') {
+            providerOverride = this.config.coordinatorProvider;
+        }
+        else {
+            providerOverride = this.config.workerProvider;
+        }
+        const provider = (providerOverride || velixConfig.provider);
+        const apiKey = getApiKey(provider);
+        if (!apiKey) {
+            throw new Error(`No API key configured for provider "${provider}". Run /config ${provider} <key> to set one.`);
+        }
+        return { provider, apiKey };
+    }
     ensureRuntimeBudget() {
         if (!this.currentTask)
             return;
@@ -342,10 +400,8 @@ Rules:
         if (completedBatch.length === 0) {
             return { status: 'continue', summary: '', additionalSubtasks: [] };
         }
+        const { provider: coordProvider, apiKey: coordApiKey } = this.resolveProviderAndKey('coordinator');
         const velixConfig = loadConfig();
-        const apiKey = getApiKey();
-        if (!apiKey)
-            throw new Error('No API key configured');
         this.updateCoordinatorTask('Reviewing worker results');
         const remaining = plan.subtasks
             .filter(subtask => !allResults.some(result => result.subtaskId === subtask.id))
@@ -386,9 +442,9 @@ Rules:
         const response = await this.send({
             text: prompt,
             system: getRoleDefinition('coordinator').systemPrompt,
-            provider: velixConfig.provider,
+            provider: coordProvider,
             model: this.resolveModel('coordinator', velixConfig.model),
-            apiKey,
+            apiKey: coordApiKey,
             signal: this.abortController?.signal,
         });
         return this.parseCoordinatorReview(response, completedBatch);
@@ -454,10 +510,8 @@ Rules:
      */
     async executeSubtask(subtask, previousResults) {
         const role = getRoleDefinition(subtask.role);
+        const { provider: workerProvider, apiKey: workerApiKey } = this.resolveProviderAndKey('worker');
         const velixConfig = loadConfig();
-        const apiKey = getApiKey();
-        if (!apiKey)
-            throw new Error('No API key configured');
         subtask.status = 'working';
         const agent = this.createAgentRecord(subtask.role, subtask.description);
         subtask.assignedAgent = agent.id;
@@ -486,9 +540,9 @@ Rules:
                 const response = await this.send({
                     text: prompt,
                     system: this.buildToolSystemPrompt(role.type),
-                    provider: velixConfig.provider,
+                    provider: workerProvider,
                     model: this.resolveModel('worker', velixConfig.model),
-                    apiKey,
+                    apiKey: workerApiKey,
                     messageHistory: conversation,
                     signal: this.abortController?.signal,
                 });

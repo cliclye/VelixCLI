@@ -29,6 +29,15 @@ export declare class SwarmOrchestrator {
     constructor(callbacks: SwarmCallbacks, config?: Partial<SwarmConfig>, dependencies?: SwarmDependencies);
     getState(): OrchestratorState;
     getCurrentTask(): SwarmTask | null;
+    /**
+     * Get all agents for the current task (allows messaging individual agents).
+     */
+    getAgents(): Agent[];
+    /**
+     * Send a direct message to a specific agent by ID or role.
+     * The agent responds in the context of its role and current task.
+     */
+    messageAgent(agentIdentifier: string, message: string): Promise<string>;
     private setState;
     /**
      * Execute a complete swarm task.
@@ -47,6 +56,11 @@ export declare class SwarmOrchestrator {
     private updateCoordinatorTask;
     private emitCoordinatorThought;
     private resolveModel;
+    /**
+     * Resolve the provider and API key for a given agent kind.
+     * Allows coordinator and workers to run on different AI providers.
+     */
+    private resolveProviderAndKey;
     private ensureRuntimeBudget;
     private buildPlanningPrompt;
     /**

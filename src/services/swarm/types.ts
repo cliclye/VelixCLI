@@ -5,9 +5,11 @@
 export type AgentRoleType =
     | 'coordinator'
     | 'planner'
+    | 'builder'
     | 'implementer'
     | 'tester'
     | 'reviewer'
+    | 'scouter'
     | 'refactorer'
     | 'architect'
     | 'debugger'
@@ -16,9 +18,11 @@ export type AgentRoleType =
 export type SpecialistRole = Exclude<AgentRoleType, 'coordinator' | 'planner'>;
 
 export const SPECIALIST_ROLES: SpecialistRole[] = [
+    'builder',
     'implementer',
     'tester',
     'reviewer',
+    'scouter',
     'refactorer',
     'architect',
     'debugger',
@@ -123,6 +127,10 @@ export interface SwarmConfig {
     plannerModel: string;
     coordinatorModel: string;
     workerModel: string;
+    /** AI provider to use for the coordinator (defaults to main provider) */
+    coordinatorProvider: string;
+    /** AI provider to use for worker agents (defaults to main provider) */
+    workerProvider: string;
     workerCLI: string;
     buildCommand: string;
     testCommand: string;

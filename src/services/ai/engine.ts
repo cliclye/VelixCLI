@@ -7,6 +7,7 @@ import { ProviderID, ChatMessage } from './types.js';
 
 /** Model ID mapping overrides */
 const MODEL_ID_MAP: Record<string, string> = {
+    'claude-sonnet-4-6': 'claude-sonnet-4-20250514',
     'claude-opus-4-5': 'claude-opus-4-5-20251101',
     'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
     'gemini-2.5-pro': 'gemini-2.5-pro-preview-06-05',

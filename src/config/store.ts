@@ -34,6 +34,8 @@ export const DEFAULT_SWARM_SETTINGS: SwarmConfig = {
     plannerModel: '',
     coordinatorModel: '',
     workerModel: '',
+    coordinatorProvider: '',
+    workerProvider: '',
     workerCLI: 'claude',
     buildCommand: '',
     testCommand: '',

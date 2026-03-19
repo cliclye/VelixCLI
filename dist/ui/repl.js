@@ -142,7 +142,18 @@ async function handleChat(input) {
         return;
     }
     // Build system prompt with project context
-    let system = 'You are Velix, an AI coding assistant running in a terminal CLI. Be concise and helpful. When suggesting code changes, output file paths and code blocks clearly.';
+    let system = `You are Velix, an expert AI coding assistant running in a terminal CLI.
+You help users write, debug, refactor, and understand code.
+
+Rules:
+- Be concise and direct. Avoid unnecessary preamble.
+- When suggesting code changes, always show the file path and use fenced code blocks with the language.
+- When multiple files need changes, show each file separately with its full path.
+- If the user asks about their project, reference actual file names and code from the context below.
+- For complex tasks, break them into clear numbered steps.
+- If unsure, say so rather than guessing.
+
+Working directory: ${process.cwd()}`;
     // Add file context if referencing current project
     try {
         const sources = readProjectSources(process.cwd(), 15_000);
@@ -321,6 +332,12 @@ async function handleSlashCommand(input, rl) {
                 console.log(c.gray('\n  No active swarm session.'));
             }
             break;
+        case '/agents':
+            printAgents();
+            break;
+        case '/msg':
+            await handleMessageAgent(args);
+            break;
         case '/status':
             printStatus();
             break;
@@ -371,6 +388,8 @@ ${DIVIDER}
     ${c.purple('/swarm-setup')}           ${c.gray('Show coordinator/team setup guidance')}
     ${c.purple('/swarm-config')}          ${c.gray('Configure swarm settings')}
     ${c.purple('/swarm-stop')}            ${c.gray('Emergency stop all agents')}
+    ${c.purple('/agents')}                ${c.gray('List all swarm agents and their status')}
+    ${c.purple('/msg')} <agent> <text>    ${c.gray('Send a direct message to an agent')}
 
   ${c.bold('Tools')}
     ${c.purple('/files')}                 ${c.gray('List project files')}
@@ -418,6 +437,11 @@ async function handleModelSwitch(args, rl) {
     const providerDef = PROVIDERS.find(p => p.id === provider);
     if (args.length > 0) {
         const model = args[0];
+        if (!providerDef.models.includes(model)) {
+            console.log(c.yellow(`\n  Warning: "${model}" is not a known model for ${providerDef.name}.`));
+            console.log(c.gray(`  Known models: ${providerDef.models.join(', ')}`));
+            console.log(c.gray(`  Setting it anyway in case it's a custom model.`));
+        }
         saveConfig({ model });
         console.log(c.green(`\n  Switched to model: ${model}`));
         return;
@@ -469,6 +493,8 @@ const SWARM_SETTING_HELP = [
     { key: 'plannerModel', description: 'Override model used for the planning pass', example: 'claude-sonnet-4-6' },
     { key: 'coordinatorModel', description: 'Override model used by the coordinator review pass', example: 'claude-sonnet-4-6' },
     { key: 'workerModel', description: 'Override model used by worker agents', example: 'claude-sonnet-4-6' },
+    { key: 'coordinatorProvider', description: 'AI provider for the coordinator (uses your API key for that provider)', example: 'chatgpt' },
+    { key: 'workerProvider', description: 'AI provider for worker agents (uses your API key for that provider)', example: 'deepseek' },
     { key: 'buildCommand', description: 'Override the build validation command', example: 'npm run build' },
     { key: 'testCommand', description: 'Override the test validation command', example: 'npm test' },
     { key: 'dryRunMode', description: 'Never apply file changes, only simulate them', example: 'false' },
@@ -506,7 +532,7 @@ function printSwarmSetup() {
     console.log(DIVIDER);
     console.log(`  ${c.gray('Controller:')} ${c.bold('You')}`);
     console.log(`  ${c.gray('Coordinator:')} ${c.cyan('Plans the task, dispatches specialists, reviews results, and decides follow-up work')}`);
-    console.log(`  ${c.gray('Workers:')} ${c.cyan('Implementer, tester, reviewer, debugger, architect, refactorer, documenter')}`);
+    console.log(`  ${c.gray('Workers:')} ${c.cyan('Builder, implementer, tester, reviewer, scouter, debugger, architect, refactorer, documenter')}`);
     console.log();
     console.log(`  ${c.gray('Current strategy:')} ${c.cyan(config.swarm.strategy)}`);
     console.log(`  ${c.gray('Current specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
@@ -514,6 +540,8 @@ function printSwarmSetup() {
     console.log(`  ${c.gray('Coordinator follow-up cap:')} ${c.cyan(String(config.swarm.maxFollowUpTasks))}`);
     console.log(`  ${c.gray('Current worker model:')} ${c.cyan(config.swarm.workerModel || '(inherits main model)')}`);
     console.log(`  ${c.gray('Current coordinator model:')} ${c.cyan(config.swarm.coordinatorModel || '(inherits main model)')}`);
+    console.log(`  ${c.gray('Coordinator provider:')} ${c.cyan(config.swarm.coordinatorProvider || '(inherits main provider)')}`);
+    console.log(`  ${c.gray('Worker provider:')} ${c.cyan(config.swarm.workerProvider || '(inherits main provider)')}`);
     console.log(`  ${c.gray('Build validation command:')} ${c.cyan(config.swarm.buildCommand || '(auto: npm run build if available)')}`);
     console.log(`  ${c.gray('Test validation command:')} ${c.cyan(config.swarm.testCommand || '(auto: npm test if available)')}`);
     console.log();
@@ -521,7 +549,7 @@ function printSwarmSetup() {
     console.log(`    ${c.cyan('/swarm-config strategy balanced')}`);
     console.log(`    ${c.cyan('/swarm-config maxAgents 4')}`);
     console.log(`    ${c.cyan('/swarm-config maxFollowUpTasks 6')}`);
-    console.log(`    ${c.cyan('/swarm-config specialistRoles implementer,tester,reviewer,debugger')}`);
+    console.log(`    ${c.cyan('/swarm-config specialistRoles builder,reviewer,scouter')}`);
     console.log(`    ${c.cyan('/swarm-config coordinatorReview true')}`);
     console.log(`    ${c.cyan('/swarm-config validateBuild true')}`);
     console.log(`    ${c.cyan('/swarm-config autoApplyChanges true')}`);
@@ -597,6 +625,8 @@ function handleSwarmConfig(args) {
             case 'plannerModel':
             case 'coordinatorModel':
             case 'workerModel':
+            case 'coordinatorProvider':
+            case 'workerProvider':
             case 'workerCLI':
             case 'buildCommand':
             case 'testCommand':
@@ -618,6 +648,61 @@ function handleSwarmConfig(args) {
     console.log(`  ${c.gray('Usage: /swarm-config <key> <value>')}`);
     console.log(`  ${c.gray('Reset defaults: /swarm-config reset')}`);
     console.log(`  ${c.gray(`Valid specialist roles: ${SPECIALIST_ROLES.join(', ')}`)}`);
+}
+function printAgents() {
+    if (!swarmOrchestrator) {
+        console.log(c.gray('\n  No active swarm session. Start one with /swarm, then run a task.'));
+        return;
+    }
+    const agents = swarmOrchestrator.getAgents();
+    if (agents.length === 0) {
+        console.log(c.gray('\n  No agents have been created yet. Send a task in swarm mode first.'));
+        return;
+    }
+    console.log(`\n${c.bold('  Swarm Agents')}`);
+    console.log(DIVIDER);
+    for (const agent of agents) {
+        const statusColor = agent.status === 'completed' ? c.green
+            : agent.status === 'failed' ? c.red
+                : agent.status === 'working' ? c.yellow
+                    : c.gray;
+        const statusLabel = statusColor(agent.status);
+        console.log(`  ${c.bold(agent.role.padEnd(14))} ${c.gray(agent.id)}  ${statusLabel}`);
+        if (agent.currentTask) {
+            console.log(`    ${c.gray('Task:')} ${agent.currentTask.slice(0, 80)}`);
+        }
+    }
+    console.log();
+    console.log(`  ${c.gray('Message an agent: /msg <role-or-id> <message>')}`);
+}
+async function handleMessageAgent(args) {
+    if (!swarmOrchestrator) {
+        console.log(c.red('\n  No active swarm session. Activate swarm mode first with /swarm.'));
+        return;
+    }
+    if (args.length < 2) {
+        console.log(c.gray('\n  Usage: /msg <agent-role-or-id> <message>'));
+        console.log(c.gray('  Example: /msg reviewer Is the code quality acceptable?'));
+        console.log(c.gray('  Use /agents to see available agents.'));
+        return;
+    }
+    const agentId = args[0];
+    const message = args.slice(1).join(' ');
+    const spinner = new Spinner('Messaging agent', 'pulse');
+    process.stdout.write('\n');
+    spinner.start();
+    try {
+        const response = await swarmOrchestrator.messageAgent(agentId, message);
+        spinner.stop(`${c.gray('Agent responded')}`);
+        console.log();
+        console.log(`  ${c.boldPurple(agentId)} ${c.gray('→')}`);
+        console.log(renderMarkdown(response));
+        console.log();
+    }
+    catch (err) {
+        spinner.stop();
+        console.log(c.red(`\n  ${err}`));
+    }
 }
 function printStatus() {
     const { provider, model } = getCurrentProvider();

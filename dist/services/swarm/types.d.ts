@@ -1,7 +1,7 @@
 /**
  * Swarm orchestration types - ported from Velix desktop
  */
-export type AgentRoleType = 'coordinator' | 'planner' | 'implementer' | 'tester' | 'reviewer' | 'refactorer' | 'architect' | 'debugger' | 'documenter';
+export type AgentRoleType = 'coordinator' | 'planner' | 'builder' | 'implementer' | 'tester' | 'reviewer' | 'scouter' | 'refactorer' | 'architect' | 'debugger' | 'documenter';
 export type SpecialistRole = Exclude<AgentRoleType, 'coordinator' | 'planner'>;
 export declare const SPECIALIST_ROLES: SpecialistRole[];
 export type AgentStatus = 'idle' | 'working' | 'completed' | 'failed' | 'terminated';
@@ -91,6 +91,10 @@ export interface SwarmConfig {
     plannerModel: string;
     coordinatorModel: string;
     workerModel: string;
+    /** AI provider to use for the coordinator (defaults to main provider) */
+    coordinatorProvider: string;
+    /** AI provider to use for worker agents (defaults to main provider) */
+    workerProvider: string;
     workerCLI: string;
     buildCommand: string;
     testCommand: string;

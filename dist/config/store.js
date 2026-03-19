@@ -23,6 +23,8 @@ export const DEFAULT_SWARM_SETTINGS = {
     plannerModel: '',
     coordinatorModel: '',
     workerModel: '',
+    coordinatorProvider: '',
+    workerProvider: '',
     workerCLI: 'claude',
     buildCommand: '',
     testCommand: '',
