@@ -17,6 +17,7 @@ import {
     execShell, gitStatus, gitDiff, gitLog, readProjectSources,
 } from '../services/tools/index.js';
 import { c, VELIX_LOGO, DIVIDER, formatProvider, renderMarkdown, formatTimestamp } from './theme.js';
+import { drawInputDivider, drawInputBoxBorder } from './components.js';
 
 // ─── State ──────────────────────────────────────────────────
 
@@ -37,14 +38,21 @@ export function startREPL(): void {
         historySize: 200,
     });
 
+    drawInputDivider(swarmMode, true);
     rl.prompt();
+    drawInputBoxBorder(swarmMode);
 
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) {
+            drawInputDivider(swarmMode, true);
             rl.prompt();
+            drawInputBoxBorder(swarmMode);
             return;
         }
+
+        // Close the input box (plain bottom border after user submits)
+        drawInputDivider(swarmMode);
 
         // Handle Ctrl-C during processing
         currentAbortController = new AbortController();
@@ -67,7 +75,9 @@ export function startREPL(): void {
 
         currentAbortController = null;
         rl.setPrompt(getPrompt());
+        drawInputDivider(swarmMode, true);
         rl.prompt();
+        drawInputBoxBorder(swarmMode);
     });
 
     rl.on('SIGINT', () => {
@@ -76,7 +86,9 @@ export function startREPL(): void {
             console.log(c.yellow('\n  Interrupting...'));
         } else {
             console.log(c.gray('\n  (Use /exit to quit, Ctrl-C again to force quit)'));
+            drawInputDivider(swarmMode, true);
             rl.prompt();
+            drawInputBoxBorder(swarmMode);
         }
     });
 
@@ -87,10 +99,8 @@ export function startREPL(): void {
 }
 
 function getPrompt(): string {
-    const { provider, model } = getCurrentProvider();
-    const cwd = path.basename(process.cwd());
-    const modeTag = swarmMode ? c.boldYellow(' [SWARM]') : '';
-    return `\n${c.boldPurple('velix')}${modeTag} ${c.gray(cwd)} ${c.dim(`(${provider}:${model.split('-').slice(-1)[0]})`)} ${c.purple('>')} `;
+    const modeTag = swarmMode ? c.boldYellow('SWARM ') : '';
+    return `${modeTag}${c.purple('❯')} `;
 }
 
 function printWelcome(): void {
@@ -109,7 +119,7 @@ function printWelcome(): void {
     console.log(`  ${c.gray('Type a message to chat, or use slash commands:')}`);
     console.log(`  ${c.purple('/help')}  ${c.gray('Show all commands')}    ${c.purple('/swarm')}  ${c.gray('Enter swarm mode')}`);
     console.log(`  ${c.purple('/model')} ${c.gray('Switch AI model')}     ${c.purple('/config')} ${c.gray('Configure API keys')}`);
-    console.log(DIVIDER);
+    console.log();
 }
 
 // ─── Chat Handler ───────────────────────────────────────────

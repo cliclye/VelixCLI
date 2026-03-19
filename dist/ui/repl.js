@@ -10,6 +10,7 @@ import { PROVIDERS } from '../services/ai/types.js';
 import { SwarmOrchestrator } from '../services/swarm/orchestrator.js';
 import { readFile, listDir, searchInFiles, execShell, gitStatus, gitDiff, gitLog, readProjectSources, } from '../services/tools/index.js';
 import { c, VELIX_LOGO, DIVIDER, formatProvider, renderMarkdown } from './theme.js';
+import { drawInputDivider, drawInputBoxBorder } from './components.js';
 // ─── State ──────────────────────────────────────────────────
 let messageHistory = [];
 let swarmMode = false;
@@ -24,13 +25,19 @@ export function startREPL() {
         prompt: getPrompt(),
         historySize: 200,
     });
+    drawInputDivider(swarmMode, true);
     rl.prompt();
+    drawInputBoxBorder(swarmMode);
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) {
+            drawInputDivider(swarmMode, true);
             rl.prompt();
+            drawInputBoxBorder(swarmMode);
             return;
         }
+        // Close the input box (plain bottom border after user submits)
+        drawInputDivider(swarmMode);
         // Handle Ctrl-C during processing
         currentAbortController = new AbortController();
         try {
@@ -54,7 +61,9 @@ export function startREPL() {
         }
         currentAbortController = null;
         rl.setPrompt(getPrompt());
+        drawInputDivider(swarmMode, true);
         rl.prompt();
+        drawInputBoxBorder(swarmMode);
     });
     rl.on('SIGINT', () => {
         if (currentAbortController) {
@@ -63,7 +72,9 @@ export function startREPL() {
         }
         else {
             console.log(c.gray('\n  (Use /exit to quit, Ctrl-C again to force quit)'));
+            drawInputDivider(swarmMode, true);
             rl.prompt();
+            drawInputBoxBorder(swarmMode);
         }
     });
     rl.on('close', () => {
@@ -72,10 +83,8 @@ export function startREPL() {
     });
 }
 function getPrompt() {
-    const { provider, model } = getCurrentProvider();
-    const cwd = path.basename(process.cwd());
-    const modeTag = swarmMode ? c.boldYellow(' [SWARM]') : '';
-    return `\n${c.boldPurple('velix')}${modeTag} ${c.gray(cwd)} ${c.dim(`(${provider}:${model.split('-').slice(-1)[0]})`)} ${c.purple('>')} `;
+    const modeTag = swarmMode ? c.boldYellow('SWARM ') : '';
+    return `${modeTag}${c.purple('❯')} `;
 }
 function printWelcome() {
     console.log(VELIX_LOGO);
@@ -91,7 +100,7 @@ function printWelcome() {
     console.log(`  ${c.gray('Type a message to chat, or use slash commands:')}`);
     console.log(`  ${c.purple('/help')}  ${c.gray('Show all commands')}    ${c.purple('/swarm')}  ${c.gray('Enter swarm mode')}`);
     console.log(`  ${c.purple('/model')} ${c.gray('Switch AI model')}     ${c.purple('/config')} ${c.gray('Configure API keys')}`);
-    console.log(DIVIDER);
+    console.log();
 }
 // ─── Chat Handler ───────────────────────────────────────────
 async function handleChat(input) {

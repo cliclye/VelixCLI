@@ -1,0 +1,67 @@
+export namespace TuiConfig {
+  export interface Info {
+    theme?: string
+    keybinds?: Record<string, string>
+    scroll_acceleration?: boolean
+    show_username?: boolean
+  }
+
+  export const defaults: Required<Info> = {
+    theme: "velix",
+    keybinds: {
+      // Leader key
+      leader: "ctrl+x",
+
+      // Global actions
+      tips_toggle: "ctrl+x t",
+      session_new: "ctrl+x n",
+      session_list: "ctrl+x l",
+      model_next: "f2",
+      model_prev: "shift+f2",
+      agent_cycle: "tab",
+      theme_list: "ctrl+x t",
+      help: "ctrl+x h",
+      status: "ctrl+x s",
+      command: "ctrl+p",
+
+      // Textarea input bindings
+      input_submit: "return",
+      input_newline: "shift+return",
+      input_move_left: "left",
+      input_move_right: "right",
+      input_move_up: "up",
+      input_move_down: "down",
+      input_select_left: "shift+left",
+      input_select_right: "shift+right",
+      input_select_up: "shift+up",
+      input_select_down: "shift+down",
+      input_line_home: "home",
+      input_line_end: "end",
+      input_select_line_home: "shift+home",
+      input_select_line_end: "shift+end",
+      input_visual_line_home: "ctrl+a",
+      input_visual_line_end: "ctrl+e",
+      input_select_visual_line_home: "ctrl+shift+a",
+      input_select_visual_line_end: "ctrl+shift+e",
+      input_buffer_home: "ctrl+g",
+      input_buffer_end: "ctrl+alt+g",
+      input_select_buffer_home: "ctrl+shift+g",
+      input_select_buffer_end: "ctrl+shift+alt+g",
+      input_delete_line: "ctrl+k",
+      input_delete_to_line_end: "ctrl+shift+k",
+      input_delete_to_line_start: "ctrl+u",
+      input_backspace: "backspace",
+      input_delete: "delete",
+      input_undo: "ctrl+z",
+      input_redo: "ctrl+y",
+      input_word_forward: "alt+right",
+      input_word_backward: "alt+left",
+      input_select_word_forward: "alt+shift+right",
+      input_select_word_backward: "alt+shift+left",
+      input_delete_word_forward: "alt+delete",
+      input_delete_word_backward: "alt+backspace",
+    },
+    scroll_acceleration: false,
+    show_username: true,
+  }
+}

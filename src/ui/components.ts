@@ -77,6 +77,44 @@ export class Spinner {
     }
 }
 
+// ─── Input Divider ──────────────────────────────────────────
+
+/**
+ * Draw a full-width horizontal rule.
+ * showHint = true   → "↵ send" appears right-aligned (used as the top/opening border)
+ * showHint = false  → plain line (used as the closing bottom border after submit)
+ */
+export function drawInputDivider(swarm = false, showHint = false): void {
+    const width = process.stdout.columns ?? 100;
+    const lineFn = swarm ? c.yellow : c.dim;
+
+    if (showHint) {
+        const hintText = ' ↵ send ';
+        const leftLen = Math.max(0, width - hintText.length);
+        process.stdout.write(lineFn(hLine('─', leftLen)) + c.dim(hintText) + '\n');
+    } else {
+        process.stdout.write(lineFn(hLine('─', width)) + '\n');
+    }
+}
+
+/**
+ * Call this immediately AFTER rl.prompt() to paint a bottom border one row
+ * below the prompt line using cursor save/restore.
+ *
+ * readline only calls _refreshLine() (which would erase this via clearScreenDown)
+ * when the user edits with backspace/arrows — normal forward typing is fine.
+ */
+export function drawInputBoxBorder(swarm = false): void {
+    const width = process.stdout.columns ?? 100;
+    const lineFn = swarm ? c.yellow : c.dim;
+    process.stdout.write(
+        '\x1b[s' +                      // save cursor (right after ❯ )
+        '\x1b[1B\r' +                   // move down 1 row, column 0
+        lineFn(hLine('─', width)) +     // bottom border
+        '\x1b[u',                        // restore cursor
+    );
+}
+
 // ─── Input Box ──────────────────────────────────────────────
 
 export interface InputBoxOptions {

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "solid-js",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./src/velix-sdk/*"],
+      "@tui/*": ["./cli/cmd/tui/*"],
+      "@velix-ai/sdk/v2": ["./src/velix-sdk/velix-sdk-v2.ts"],
+      "@velix-ai/sdk": ["./src/velix-sdk/velix-sdk.ts"]
+    }
+  },
+  "include": ["src/**/*", "cli/**/*", "util/**/*"]
+}
