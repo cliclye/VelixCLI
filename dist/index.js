@@ -9,11 +9,13 @@
  *   velix --version    Show version
  *   velix -c "msg"     Send a single message and exit
  */
+import updateNotifier from 'update-notifier';
 import { startREPL } from './ui/repl.js';
 import { loadConfig, getApiKey, setApiKey, setProvider } from './config/store.js';
 import { sendMessage } from './services/ai/engine.js';
 import { c, renderMarkdown } from './ui/theme.js';
 import { PROVIDERS } from './services/ai/types.js';
+updateNotifier({ pkg: { name: 'velix-cli', version: '0.1.0' }, updateCheckInterval: 1000 * 60 * 60 * 24 }).notify();
 async function main() {
     const args = process.argv.slice(2);
     // --help

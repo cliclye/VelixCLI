@@ -7,6 +7,11 @@
     "velix": "./bin/velix.mjs"
   },
   "main": "./dist/index.js",
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -14,9 +19,24 @@
     "tui": "bun src/tui-main.tsx",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["ai", "cli", "coding", "assistant", "swarm", "multi-agent"],
-  "author": "",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding",
+    "assistant",
+    "swarm",
+    "multi-agent"
+  ],
+  "author": "cliclye",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cliclye/velix-cli.git"
+  },
+  "homepage": "https://github.com/cliclye/velix-cli#readme",
+  "bugs": {
+    "url": "https://github.com/cliclye/velix-cli/issues"
+  },
   "dependencies": {
     "@opentui/core": "^0.1.88",
     "@opentui/solid": "^0.1.88",
@@ -35,11 +55,13 @@
     "ora": "^8.0.1",
     "remeda": "^2.33.6",
     "solid-js": "^1.9.11",
+    "update-notifier": "^7.3.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
     "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.11.0",
+    "@types/update-notifier": "^6.0.8",
     "typescript": "~5.4.0"
   },
   "engines": {

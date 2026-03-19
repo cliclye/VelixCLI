@@ -10,11 +10,14 @@
  *   velix -c "msg"     Send a single message and exit
  */
 
+import updateNotifier from 'update-notifier';
 import { startREPL } from './ui/repl.js';
 import { loadConfig, getCurrentProvider, getApiKey, setApiKey, setProvider } from './config/store.js';
 import { sendMessage } from './services/ai/engine.js';
 import { c, VELIX_LOGO, renderMarkdown } from './ui/theme.js';
 import { PROVIDERS, ProviderID } from './services/ai/types.js';
+
+updateNotifier({ pkg: { name: 'velix-cli', version: '0.1.0' }, updateCheckInterval: 1000 * 60 * 60 * 24 }).notify();
 
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
