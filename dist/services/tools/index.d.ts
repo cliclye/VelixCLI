@@ -15,7 +15,9 @@ export interface SearchMatch {
     column: number;
     text: string;
 }
-export declare function searchInFiles(directory: string, pattern: string, maxResults?: number): SearchMatch[];
+export declare function searchInFiles(directory: string, pattern: string, maxResults?: number, options?: {
+    glob?: string;
+}): SearchMatch[];
 export interface ShellResult {
     stdout: string;
     stderr: string;

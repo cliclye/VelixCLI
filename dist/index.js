@@ -113,6 +113,8 @@ ${c.bold('INTERACTIVE COMMANDS')}
   /model <name>     Switch AI model
   /provider <name>  Switch AI provider
   /swarm            Toggle swarm mode
+  /swarm-setup      Show swarm team setup guidance
+  /swarm-config     Inspect or change swarm settings
   /shell <cmd>      Run shell command
   /git [status|log] Git operations
   /exit             Quit

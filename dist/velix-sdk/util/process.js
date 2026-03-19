@@ -1,0 +1,45 @@
+import { execFile, spawn as nodeSpawn } from "child_process";
+export function onExit(handler) {
+    process.on("exit", handler);
+    process.on("SIGTERM", handler);
+}
+export const Process = {
+    async run(cmd, options = {}) {
+        return new Promise((resolve, reject) => {
+            const [bin, ...args] = cmd;
+            execFile(bin, args, { encoding: "buffer" }, (err, stdout, stderr) => {
+                if (err && !options.nothrow) {
+                    reject(err);
+                    return;
+                }
+                resolve({
+                    stdout: stdout ?? Buffer.alloc(0),
+                    stderr: stderr ?? Buffer.alloc(0),
+                    exitCode: err?.code !== undefined ? Number(err.code) : 0,
+                });
+            });
+        });
+    },
+    async text(cmd, options = {}) {
+        const result = await Process.run(cmd, options);
+        return { text: result.stdout.toString("utf-8") };
+    },
+    spawn(cmd, options = {}) {
+        const [bin, ...args] = cmd;
+        const spawnOptions = {
+            stdio: [
+                options.stdin ?? "inherit",
+                options.stdout ?? "inherit",
+                options.stderr ?? "inherit",
+            ],
+            shell: options.shell,
+        };
+        const child = nodeSpawn(bin, args, spawnOptions);
+        const exited = new Promise((resolve) => {
+            child.on("exit", (code) => resolve(code ?? 0));
+            child.on("error", () => resolve(1));
+        });
+        return { stdin: child.stdin, stdout: child.stdout, exited };
+    },
+};
+//# sourceMappingURL=process.js.map

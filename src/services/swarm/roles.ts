@@ -14,6 +14,20 @@ export interface RoleDefinition {
 
 export const ROLE_DEFINITIONS: RoleDefinition[] = [
     {
+        type: 'coordinator',
+        name: 'Coordinator',
+        description: 'Controls the swarm, delegates to specialists, and decides next steps',
+        systemPrompt: `You are the swarm coordinator for a coding task. Your job is to:
+1. Understand the user's goal and keep the team aligned to it
+2. Decide which specialist roles should work next and why
+3. Review worker results, detect gaps, and create follow-up tasks when needed
+4. Keep work efficient and avoid duplicate effort
+5. Stop the swarm when the task is complete or risks outweigh further work
+
+You are responsible for orchestration, delegation quality, and final completeness.`,
+        capabilities: ['analyze', 'plan', 'decompose', 'review'],
+    },
+    {
         type: 'planner',
         name: 'Planner',
         description: 'Analyzes tasks and breaks them into subtasks',

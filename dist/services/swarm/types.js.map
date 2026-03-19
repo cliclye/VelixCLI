@@ -1,1 +1,1 @@
-{"version":3,"file":"types.js","sourceRoot":"","sources":["../../../src/services/swarm/types.ts"],"names":[],"mappings":"AAAA;;GAEG"}
+{"version":3,"file":"types.js","sourceRoot":"","sources":["../../../src/services/swarm/types.ts"],"names":[],"mappings":"AAAA;;GAEG;AAeH,MAAM,CAAC,MAAM,gBAAgB,GAAqB;IAC9C,aAAa;IACb,QAAQ;IACR,UAAU;IACV,YAAY;IACZ,WAAW;IACX,UAAU;IACV,YAAY;CACf,CAAC"}

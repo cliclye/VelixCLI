@@ -1,0 +1,1 @@
+{"version":3,"file":"bus-event.js","sourceRoot":"","sources":["../../../src/velix-sdk/bus/bus-event.ts"],"names":[],"mappings":"AAEA,MAAM,CAAC,MAAM,QAAQ,GAAG;IACtB,MAAM,CAA0B,IAAY,EAAE,MAAsB;QAClE,OAAO;YACL,IAAI;YACJ,UAAU,EAAE,MAAM;SACnB,CAAA;IACH,CAAC;CACF,CAAA"}

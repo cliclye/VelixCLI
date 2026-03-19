@@ -1,0 +1,1 @@
+{"version":3,"file":"snapshot.d.ts","sourceRoot":"","sources":["../../src/velix-sdk/snapshot.ts"],"names":[],"mappings":"AAAA,yBAAiB,QAAQ,CAAC;IACxB,UAAiB,QAAQ;QACvB,IAAI,EAAE,MAAM,CAAA;QACZ,KAAK,EAAE,MAAM,CAAA;QACb,OAAO,EAAE,MAAM,CAAA;QACf,KAAK,EAAE,MAAM,CAAA;KACd;CACF"}

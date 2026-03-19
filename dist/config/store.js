@@ -6,16 +6,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PROVIDERS } from '../services/ai/types.js';
+import { SPECIALIST_ROLES } from '../services/swarm/types.js';
+export const DEFAULT_SWARM_SETTINGS = {
+    maxAgents: 5,
+    maxRuntime: 600000,
+    maxStepsPerAgent: 12,
+    maxFollowUpTasks: 6,
+    safeMode: false,
+    autoApplyChanges: true,
+    allowShell: true,
+    coordinatorReview: true,
+    validateBuild: true,
+    validateTests: false,
+    specialistRoles: [...SPECIALIST_ROLES],
+    strategy: 'balanced',
+    plannerModel: '',
+    coordinatorModel: '',
+    workerModel: '',
+    workerCLI: 'claude',
+    buildCommand: '',
+    testCommand: '',
+    dryRunMode: false,
+};
 const DEFAULT_CONFIG = {
     provider: 'claude',
     model: 'claude-sonnet-4-6',
     apiKeys: {},
-    swarm: {
-        maxAgents: 5,
-        maxRuntime: 600000,
-        safeMode: false,
-        workerCLI: 'claude',
-    },
+    swarm: { ...DEFAULT_SWARM_SETTINGS },
     theme: 'default',
 };
 function getConfigDir() {

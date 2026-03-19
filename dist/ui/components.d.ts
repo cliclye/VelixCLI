@@ -1,6 +1,8 @@
 /**
  * UI components for the Velix CLI — bordered input box, spinner, response frame, status bar.
  */
+/// <reference types="node" />
+import readline from 'node:readline';
 export declare class Spinner {
     private timer;
     private frameIdx;
@@ -14,18 +16,18 @@ export declare class Spinner {
 }
 /**
  * Draw a full-width horizontal rule.
- * showHint = true   → "↵ send" appears right-aligned (used as the top/opening border)
- * showHint = false  → plain line (used as the closing bottom border after submit)
+ * The submit hint is rendered on the input row, not in this divider.
  */
 export declare function drawInputDivider(swarm?: boolean, showHint?: boolean): void;
 /**
- * Call this immediately AFTER rl.prompt() to paint a bottom border one row
- * below the prompt line using cursor save/restore.
- *
- * readline only calls _refreshLine() (which would erase this via clearScreenDown)
- * when the user edits with backspace/arrows — normal forward typing is fine.
+ * Draw a right-aligned submit hint on the current input row while preserving the cursor.
  */
-export declare function drawInputBoxBorder(swarm?: boolean): void;
+export declare function drawInputSideHint(rl: readline.Interface): void;
+/**
+ * Call this immediately AFTER rl.prompt() to paint a bottom border one row
+ * below the rendered input area using cursor save/restore.
+ */
+export declare function drawInputBoxBorder(rl: readline.Interface, swarm?: boolean): void;
 export interface InputBoxOptions {
     /** Label shown above the input area. */
     label?: string;

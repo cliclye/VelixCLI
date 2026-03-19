@@ -1,0 +1,1 @@
+{"version":3,"file":"filesystem.d.ts","sourceRoot":"","sources":["../../../src/velix-sdk/util/filesystem.ts"],"names":[],"mappings":";;AAGA,eAAO,MAAM,UAAU;gCACa,MAAM,GAAG,QAAQ,CAAC,CAAC;wBAK3B,MAAM,QAAQ,GAAG,GAAG,QAAQ,IAAI,CAAC;oBAKrC,MAAM,WAAW,MAAM,GAAG,QAAQ,IAAI,CAAC;uBAKpC,MAAM,GAAG,QAAQ,MAAM,CAAC;wBAIvB,MAAM,GAAG,QAAQ,MAAM,CAAC;CAGnD,CAAA"}

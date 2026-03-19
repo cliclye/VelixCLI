@@ -22,6 +22,37 @@ function hLine(char: string, width: number): string {
     return char.repeat(Math.max(0, width));
 }
 
+function findReadlineOwnSymbol(rl: readline.Interface, name: string): symbol | undefined {
+    return Object.getOwnPropertySymbols(rl).find((sym) => String(sym) === `Symbol(${name})`);
+}
+
+function findReadlineProtoSymbol(rl: readline.Interface, name: string): symbol | undefined {
+    return Object.getOwnPropertySymbols(Object.getPrototypeOf(rl)).find((sym) => String(sym) === `Symbol(${name})`);
+}
+
+function getPromptText(rl: readline.Interface): string {
+    const promptSymbol = findReadlineOwnSymbol(rl, '_prompt');
+    return promptSymbol ? String((rl as readline.Interface & Record<symbol, unknown>)[promptSymbol] ?? '') : '';
+}
+
+function getDisplayPos(rl: readline.Interface, text: string): { cols: number; rows: number } {
+    const displayPosSymbol = findReadlineProtoSymbol(rl, '_getDisplayPos');
+    const getDisplayPosFn = displayPosSymbol
+        ? (rl as readline.Interface & Record<symbol, unknown>)[displayPosSymbol] as ((input: string) => { cols: number; rows: number }) | undefined
+        : undefined;
+
+    if (typeof getDisplayPosFn === 'function') {
+        return getDisplayPosFn.call(rl, text);
+    }
+
+    const width = Math.max(termCols(), 1);
+    const plainLen = stripAnsi(text);
+    return {
+        cols: plainLen % width,
+        rows: Math.floor(plainLen / width),
+    };
+}
+
 // ─── Box drawing characters ─────────────────────────────────
 // Using rounded-corner box set for a polished look.
 const BOX = {
@@ -81,37 +112,57 @@ export class Spinner {
 
 /**
  * Draw a full-width horizontal rule.
- * showHint = true   → "↵ send" appears right-aligned (used as the top/opening border)
- * showHint = false  → plain line (used as the closing bottom border after submit)
+ * The submit hint is rendered on the input row, not in this divider.
  */
 export function drawInputDivider(swarm = false, showHint = false): void {
-    const width = process.stdout.columns ?? 100;
+    const width = termCols();
     const lineFn = swarm ? c.yellow : c.dim;
+    process.stdout.write(lineFn(hLine('─', width)) + '\n');
+}
 
-    if (showHint) {
-        const hintText = ' ↵ send ';
-        const leftLen = Math.max(0, width - hintText.length);
-        process.stdout.write(lineFn(hLine('─', leftLen)) + c.dim(hintText) + '\n');
-    } else {
-        process.stdout.write(lineFn(hLine('─', width)) + '\n');
-    }
+/**
+ * Draw a right-aligned submit hint on the current input row while preserving the cursor.
+ */
+export function drawInputSideHint(rl: readline.Interface): void {
+    const width = termCols();
+    const hintText = c.dim('↵ send');
+    const hintLen = stripAnsi(hintText);
+    const promptText = getPromptText(rl);
+    const inputText = rl.line ?? '';
+    const displayPos = getDisplayPos(rl, promptText + inputText);
+    const hintColumn = width - hintLen + 1;
+    const cursorPos = rl.getCursorPos();
+
+    if (displayPos.rows > 0) return;
+    if (hintColumn <= displayPos.cols + 1) return;
+
+    process.stdout.write(
+        '\x1b[s'
+        + (cursorPos.rows > 0 ? `\x1b[${cursorPos.rows}A` : '')
+        + `\x1b[${hintColumn}G`
+        + hintText
+        + '\x1b[u',
+    );
 }
 
 /**
  * Call this immediately AFTER rl.prompt() to paint a bottom border one row
- * below the prompt line using cursor save/restore.
- *
- * readline only calls _refreshLine() (which would erase this via clearScreenDown)
- * when the user edits with backspace/arrows — normal forward typing is fine.
+ * below the rendered input area using cursor save/restore.
  */
-export function drawInputBoxBorder(swarm = false): void {
-    const width = process.stdout.columns ?? 100;
+export function drawInputBoxBorder(rl: readline.Interface, swarm = false): void {
+    const width = termCols();
     const lineFn = swarm ? c.yellow : c.dim;
+    const promptText = getPromptText(rl);
+    const inputText = rl.line ?? '';
+    const displayPos = getDisplayPos(rl, promptText + inputText);
+    const cursorPos = rl.getCursorPos();
+    const downRows = Math.max(1, displayPos.rows - cursorPos.rows + 1);
+
     process.stdout.write(
-        '\x1b[s' +                      // save cursor (right after ❯ )
-        '\x1b[1B\r' +                   // move down 1 row, column 0
-        lineFn(hLine('─', width)) +     // bottom border
-        '\x1b[u',                        // restore cursor
+        '\x1b[s'
+        + `\x1b[${downRows}B\r`
+        + lineFn(hLine('─', width))
+        + '\x1b[u',
     );
 }
 

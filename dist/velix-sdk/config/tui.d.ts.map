@@ -1,0 +1,1 @@
+{"version":3,"file":"tui.d.ts","sourceRoot":"","sources":["../../../src/velix-sdk/config/tui.ts"],"names":[],"mappings":"AAAA,yBAAiB,SAAS,CAAC;IACzB,UAAiB,IAAI;QACnB,KAAK,CAAC,EAAE,MAAM,CAAA;QACd,QAAQ,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,MAAM,CAAC,CAAA;QACjC,mBAAmB,CAAC,EAAE,OAAO,CAAA;QAC7B,aAAa,CAAC,EAAE,OAAO,CAAA;KACxB;IAEM,MAAM,QAAQ,EAAE,QAAQ,CAAC,IAAI,CAyDnC,CAAA;CACF"}

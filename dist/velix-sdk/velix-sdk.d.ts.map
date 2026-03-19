@@ -1,0 +1,1 @@
+{"version":3,"file":"velix-sdk.d.ts","sourceRoot":"","sources":["../../src/velix-sdk/velix-sdk.ts"],"names":[],"mappings":"AAEA,MAAM,WAAW,IAAI;IACnB,KAAK,EAAE,MAAM,CAAA;IACb,MAAM,EAAE,MAAM,CAAA;IACd,QAAQ,EAAE,MAAM,CAAA;IAChB,SAAS,EAAE,MAAM,CAAA;CAClB;AAED,OAAO,EAAE,iBAAiB,EAAE,KAAK,WAAW,EAAE,MAAM,gBAAgB,CAAA"}

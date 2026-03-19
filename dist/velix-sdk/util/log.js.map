@@ -1,0 +1,1 @@
+{"version":3,"file":"log.js","sourceRoot":"","sources":["../../../src/velix-sdk/util/log.ts"],"names":[],"mappings":"AAAA,MAAM,CAAC,MAAM,GAAG,GAAG;IACjB,OAAO,EAAE;QACP,KAAK,CAAC,QAAgB,EAAE,KAA+B;YACrD,qDAAqD;QACvD,CAAC;QACD,IAAI,CAAC,QAAgB,EAAE,KAA+B;YACpD,OAAO;QACT,CAAC;QACD,IAAI,CAAC,QAAgB,EAAE,KAA+B;YACpD,OAAO;QACT,CAAC;KACF;CACF,CAAA"}

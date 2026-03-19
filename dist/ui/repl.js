@@ -5,12 +5,14 @@
 import readline from 'node:readline';
 import path from 'node:path';
 import { sendMessage } from '../services/ai/engine.js';
-import { loadConfig, saveConfig, getApiKey, setApiKey, setProvider, getCurrentProvider, } from '../config/store.js';
+import { loadConfig, saveConfig, getApiKey, setApiKey, DEFAULT_SWARM_SETTINGS, setProvider, getCurrentProvider, } from '../config/store.js';
 import { PROVIDERS } from '../services/ai/types.js';
 import { SwarmOrchestrator } from '../services/swarm/orchestrator.js';
 import { readFile, listDir, searchInFiles, execShell, gitStatus, gitDiff, gitLog, readProjectSources, } from '../services/tools/index.js';
 import { c, VELIX_LOGO, DIVIDER, formatProvider, renderMarkdown } from './theme.js';
-import { drawInputDivider, drawInputBoxBorder } from './components.js';
+import { drawInputDivider, drawInputBoxBorder, drawInputSideHint, Spinner } from './components.js';
+import { printSwarmActivity, formatElapsed } from './swarm-trace.js';
+import { SPECIALIST_ROLES } from '../services/swarm/types.js';
 // ─── State ──────────────────────────────────────────────────
 let messageHistory = [];
 let swarmMode = false;
@@ -25,17 +27,48 @@ export function startREPL() {
         prompt: getPrompt(),
         historySize: 200,
     });
-    drawInputDivider(swarmMode, true);
-    rl.prompt();
-    drawInputBoxBorder(swarmMode);
+    let promptVisible = false;
+    let lastPromptCursorRows = 0;
+    const readlineWithInternals = rl;
+    const refreshLine = readlineWithInternals._refreshLine?.bind(rl);
+    const renderPromptChrome = () => {
+        drawInputSideHint(rl);
+        drawInputBoxBorder(rl, swarmMode);
+        lastPromptCursorRows = rl.getCursorPos().rows;
+    };
+    if (refreshLine) {
+        readlineWithInternals._refreshLine = () => {
+            refreshLine();
+            renderPromptChrome();
+        };
+    }
+    const showPrompt = () => {
+        promptVisible = true;
+        drawInputDivider(swarmMode);
+        rl.prompt();
+    };
+    const redrawPrompt = () => {
+        if (!promptVisible)
+            return;
+        process.stdout.write(`\x1b[${lastPromptCursorRows + 1}A\r\x1b[J`);
+        drawInputDivider(swarmMode);
+        if (refreshLine) {
+            refreshLine();
+            renderPromptChrome();
+            return;
+        }
+        rl.prompt(true);
+        renderPromptChrome();
+    };
+    process.stdout.on('resize', redrawPrompt);
+    showPrompt();
     rl.on('line', async (line) => {
         const input = line.trim();
         if (!input) {
-            drawInputDivider(swarmMode, true);
-            rl.prompt();
-            drawInputBoxBorder(swarmMode);
+            showPrompt();
             return;
         }
+        promptVisible = false;
         // Close the input box (plain bottom border after user submits)
         drawInputDivider(swarmMode);
         // Handle Ctrl-C during processing
@@ -61,9 +94,7 @@ export function startREPL() {
         }
         currentAbortController = null;
         rl.setPrompt(getPrompt());
-        drawInputDivider(swarmMode, true);
-        rl.prompt();
-        drawInputBoxBorder(swarmMode);
+        showPrompt();
     });
     rl.on('SIGINT', () => {
         if (currentAbortController) {
@@ -72,12 +103,11 @@ export function startREPL() {
         }
         else {
             console.log(c.gray('\n  (Use /exit to quit, Ctrl-C again to force quit)'));
-            drawInputDivider(swarmMode, true);
-            rl.prompt();
-            drawInputBoxBorder(swarmMode);
+            showPrompt();
         }
     });
     rl.on('close', () => {
+        process.stdout.off('resize', redrawPrompt);
         console.log(c.gray('\n  Goodbye!\n'));
         process.exit(0);
     });
@@ -100,6 +130,7 @@ function printWelcome() {
     console.log(`  ${c.gray('Type a message to chat, or use slash commands:')}`);
     console.log(`  ${c.purple('/help')}  ${c.gray('Show all commands')}    ${c.purple('/swarm')}  ${c.gray('Enter swarm mode')}`);
     console.log(`  ${c.purple('/model')} ${c.gray('Switch AI model')}     ${c.purple('/config')} ${c.gray('Configure API keys')}`);
+    console.log(`  ${c.purple('/swarm-setup')} ${c.gray('Tune coordinator and worker settings')}`);
     console.log();
 }
 // ─── Chat Handler ───────────────────────────────────────────
@@ -121,18 +152,25 @@ async function handleChat(input) {
         }
     }
     catch { /* ignore */ }
-    process.stdout.write(`\n  ${c.purple('velix')} ${c.gray('thinking...')}\r`);
-    const response = await sendMessage({
-        text: input,
-        system,
-        provider: config.provider,
-        model: config.model,
-        apiKey,
-        messageHistory,
-        signal: currentAbortController?.signal,
-    });
-    // Clear the "thinking" line
-    process.stdout.write('\x1b[2K\r');
+    const spinner = new Spinner('Thinking', 'pulse');
+    process.stdout.write('\n');
+    spinner.start();
+    const startedAt = Date.now();
+    let response = '';
+    try {
+        response = await sendMessage({
+            text: input,
+            system,
+            provider: config.provider,
+            model: config.model,
+            apiKey,
+            messageHistory,
+            signal: currentAbortController?.signal,
+        });
+    }
+    finally {
+        spinner.stop(`${c.gray('Responded in')} ${c.cyan(formatElapsed(Date.now() - startedAt))}`);
+    }
     // Store in history
     messageHistory.push({ role: 'user', content: input });
     messageHistory.push({ role: 'assistant', content: response });
@@ -150,35 +188,70 @@ async function handleSwarmInput(input) {
     if (!swarmOrchestrator) {
         const callbacks = {
             onLog: (msg, type) => {
-                const prefix = {
-                    info: c.blue(' i'),
-                    warn: c.yellow(' !'),
-                    error: c.red(' ✗'),
-                    success: c.green(' ✓'),
-                    agent: c.purple(' ◆'),
-                }[type ?? 'info'];
-                console.log(`  ${prefix} ${msg}`);
+                if (type === 'agent')
+                    return;
+                if (type === 'info') {
+                    if (msg.startsWith('Swarm task started: ')) {
+                        console.log(`  ${c.boldBlue('⏺')} ${msg.replace('Swarm task started: ', '')}`);
+                        return;
+                    }
+                    if (msg.startsWith('Phase 1:')) {
+                        console.log(`  ${c.boldBlue('⏺')} Planning the task.`);
+                        return;
+                    }
+                    if (msg.startsWith('Phase 2:')) {
+                        console.log(`  ${c.boldBlue('⏺')} Executing subtasks.`);
+                        return;
+                    }
+                    if (msg.startsWith('Phase 3:')) {
+                        console.log(`  ${c.boldBlue('⏺')} Validating results.`);
+                        return;
+                    }
+                }
+                const prefix = type === 'warn'
+                    ? c.yellow(' !')
+                    : type === 'error'
+                        ? c.red(' ✗')
+                        : type === 'success'
+                            ? c.green(' ✓')
+                            : '';
+                if (prefix) {
+                    console.log(`  ${prefix} ${msg}`);
+                }
             },
-            onStateChange: (state) => {
-                console.log(`  ${c.gray('State:')} ${c.boldCyan(state)}`);
+            onStateChange: () => { },
+            onActivity: (activity) => {
+                printSwarmActivity(activity);
             },
             onAgentUpdate: (agent) => {
-                const statusIcon = {
-                    idle: c.gray('○'),
-                    working: c.yellow('◉'),
-                    completed: c.green('●'),
-                    failed: c.red('●'),
-                    terminated: c.red('⊘'),
-                }[agent.status];
-                console.log(`  ${statusIcon} ${c.bold(agent.role)} ${c.gray(agent.id.slice(0, 12))} — ${agent.currentTask ?? agent.status}`);
+                if (agent.role === 'coordinator') {
+                    if (agent.status === 'failed') {
+                        console.log(`  ${c.red('✗')} ${c.bold('coordinator')} ${c.gray(agent.errors[0] ?? 'failed')}`);
+                    }
+                    return;
+                }
+                if (agent.status === 'working') {
+                    console.log(`  ${c.purple('◆')} ${c.bold(agent.role)} ${c.gray(agent.currentTask ?? 'working')}`);
+                    return;
+                }
+                if (agent.status === 'completed') {
+                    console.log(`  ${c.green('✓')} ${c.bold(agent.role)} ${c.gray('completed')}`);
+                    return;
+                }
+                if (agent.status === 'failed') {
+                    console.log(`  ${c.red('✗')} ${c.bold(agent.role)} ${c.gray(agent.errors[0] ?? 'failed')}`);
+                }
             },
             onComplete: (task) => {
                 console.log();
                 console.log(DIVIDER);
                 console.log(`  ${c.boldGreen('Swarm Task Complete')}`);
                 console.log(`  ${c.gray('Agents used:')} ${task.agents.length}`);
-                console.log(`  ${c.gray('Duration:')} ${task.completedAt ? Math.round((task.completedAt.getTime() - task.createdAt.getTime()) / 1000) : '?'}s`);
+                console.log(`  ${c.gray('Duration:')} ${task.completedAt ? formatElapsed(task.completedAt.getTime() - task.createdAt.getTime()) : '?'}`);
                 console.log(`  ${c.gray('Status:')} ${task.status === 'completed' ? c.green('SUCCESS') : c.red('FAILED')}`);
+                if (task.completedAt) {
+                    console.log(`  ${c.gray('✻')} ${c.gray('Crunched for')} ${c.cyan(formatElapsed(task.completedAt.getTime() - task.createdAt.getTime()))}`);
+                }
                 console.log(DIVIDER);
             },
         };
@@ -221,15 +294,20 @@ async function handleSlashCommand(input, rl) {
             if (swarmMode) {
                 console.log();
                 console.log(`  ${c.boldYellow('SWARM MODE ACTIVATED')}`);
-                console.log(`  ${c.gray('Your messages will be executed as multi-agent swarm tasks.')}`);
+                console.log(`  ${c.gray('Your messages will be executed as coordinated multi-agent swarm tasks.')}`);
+                console.log(`  ${c.gray('A coordinator will plan, dispatch specialists, review results, and queue follow-up work.')}`);
                 console.log(`  ${c.gray('Type /swarm again to return to normal chat mode.')}`);
                 console.log(`  ${c.gray('Type /swarm-config to configure swarm settings.')}`);
+                console.log(`  ${c.gray('Type /swarm-setup for a guided config overview.')}`);
                 console.log(DIVIDER);
             }
             else {
                 swarmOrchestrator = null;
                 console.log(`\n  ${c.gray('Swarm mode deactivated. Back to normal chat.')}`);
             }
+            break;
+        case '/swarm-setup':
+            printSwarmSetup();
             break;
         case '/swarm-config':
             handleSwarmConfig(args);
@@ -290,6 +368,7 @@ ${DIVIDER}
 
   ${c.bold('Swarm Mode')}
     ${c.purple('/swarm')}                 ${c.gray('Toggle swarm mode on/off')}
+    ${c.purple('/swarm-setup')}           ${c.gray('Show coordinator/team setup guidance')}
     ${c.purple('/swarm-config')}          ${c.gray('Configure swarm settings')}
     ${c.purple('/swarm-stop')}            ${c.gray('Emergency stop all agents')}
 
@@ -374,39 +453,171 @@ async function handleProviderSwitch(args, rl) {
     }
     console.log(`\n  ${c.gray('Usage: /provider <provider-id>')}`);
 }
+const SWARM_SETTING_HELP = [
+    { key: 'strategy', description: 'Team planning style: fast, balanced, or thorough', example: 'balanced' },
+    { key: 'maxAgents', description: 'Maximum worker agents running at once', example: '4' },
+    { key: 'maxRuntime', description: 'Total swarm runtime budget in milliseconds', example: '600000' },
+    { key: 'maxStepsPerAgent', description: 'Maximum tool-loop steps each worker can take', example: '12' },
+    { key: 'maxFollowUpTasks', description: 'Maximum extra tasks the coordinator can add after reviews', example: '6' },
+    { key: 'safeMode', description: 'Preview-oriented mode that blocks risky execution', example: 'true' },
+    { key: 'autoApplyChanges', description: 'Apply write/edit actions automatically', example: 'true' },
+    { key: 'allowShell', description: 'Allow workers to run shell commands', example: 'true' },
+    { key: 'coordinatorReview', description: 'Let the coordinator review each worker batch and add follow-up work', example: 'true' },
+    { key: 'validateBuild', description: 'Run build validation after swarm execution', example: 'true' },
+    { key: 'validateTests', description: 'Run test validation after swarm execution', example: 'false' },
+    { key: 'specialistRoles', description: 'Comma-separated worker roles the coordinator can assign', example: 'implementer,tester,reviewer,debugger' },
+    { key: 'plannerModel', description: 'Override model used for the planning pass', example: 'claude-sonnet-4-6' },
+    { key: 'coordinatorModel', description: 'Override model used by the coordinator review pass', example: 'claude-sonnet-4-6' },
+    { key: 'workerModel', description: 'Override model used by worker agents', example: 'claude-sonnet-4-6' },
+    { key: 'buildCommand', description: 'Override the build validation command', example: 'npm run build' },
+    { key: 'testCommand', description: 'Override the test validation command', example: 'npm test' },
+    { key: 'dryRunMode', description: 'Never apply file changes, only simulate them', example: 'false' },
+    { key: 'workerCLI', description: 'Reserved worker backend label for future external workers', example: 'claude' },
+];
+function parseBoolean(value) {
+    if (value === 'true')
+        return true;
+    if (value === 'false')
+        return false;
+    return null;
+}
+function parseSpecialistRoles(value) {
+    const roles = value
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+    if (roles.length === 0)
+        return null;
+    if (!roles.every(role => SPECIALIST_ROLES.includes(role))) {
+        return null;
+    }
+    return Array.from(new Set(roles));
+}
+function formatSwarmSettingValue(value) {
+    if (Array.isArray(value))
+        return value.join(', ');
+    if (value === '')
+        return '(auto)';
+    return String(value);
+}
+function printSwarmSetup() {
+    const config = loadConfig();
+    console.log(`\n${c.bold('  Swarm Setup')}`);
+    console.log(DIVIDER);
+    console.log(`  ${c.gray('Controller:')} ${c.bold('You')}`);
+    console.log(`  ${c.gray('Coordinator:')} ${c.cyan('Plans the task, dispatches specialists, reviews results, and decides follow-up work')}`);
+    console.log(`  ${c.gray('Workers:')} ${c.cyan('Implementer, tester, reviewer, debugger, architect, refactorer, documenter')}`);
+    console.log();
+    console.log(`  ${c.gray('Current strategy:')} ${c.cyan(config.swarm.strategy)}`);
+    console.log(`  ${c.gray('Current specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
+    console.log(`  ${c.gray('Max workers at once:')} ${c.cyan(String(config.swarm.maxAgents))}`);
+    console.log(`  ${c.gray('Coordinator follow-up cap:')} ${c.cyan(String(config.swarm.maxFollowUpTasks))}`);
+    console.log(`  ${c.gray('Current worker model:')} ${c.cyan(config.swarm.workerModel || '(inherits main model)')}`);
+    console.log(`  ${c.gray('Current coordinator model:')} ${c.cyan(config.swarm.coordinatorModel || '(inherits main model)')}`);
+    console.log(`  ${c.gray('Build validation command:')} ${c.cyan(config.swarm.buildCommand || '(auto: npm run build if available)')}`);
+    console.log(`  ${c.gray('Test validation command:')} ${c.cyan(config.swarm.testCommand || '(auto: npm test if available)')}`);
+    console.log();
+    console.log(`  ${c.bold('Recommended starter profile')}`);
+    console.log(`    ${c.cyan('/swarm-config strategy balanced')}`);
+    console.log(`    ${c.cyan('/swarm-config maxAgents 4')}`);
+    console.log(`    ${c.cyan('/swarm-config maxFollowUpTasks 6')}`);
+    console.log(`    ${c.cyan('/swarm-config specialistRoles implementer,tester,reviewer,debugger')}`);
+    console.log(`    ${c.cyan('/swarm-config coordinatorReview true')}`);
+    console.log(`    ${c.cyan('/swarm-config validateBuild true')}`);
+    console.log(`    ${c.cyan('/swarm-config autoApplyChanges true')}`);
+    console.log();
+    console.log(`  ${c.bold('All swarm settings')}`);
+    for (const item of SWARM_SETTING_HELP) {
+        console.log(`    ${c.purple(item.key.padEnd(18))} ${c.gray(item.description)} ${c.dim(`(example: ${item.example})`)}`);
+    }
+    console.log();
+    console.log(`  ${c.gray('Use /swarm-config <key> <value> to change a setting, or /swarm-config reset to restore defaults.')}`);
+}
 function handleSwarmConfig(args) {
     const config = loadConfig();
+    if (args[0] === 'reset') {
+        config.swarm = { ...DEFAULT_SWARM_SETTINGS };
+        saveConfig(config);
+        swarmOrchestrator = null;
+        console.log(c.green('\n  Swarm config reset to defaults.'));
+        return;
+    }
     if (args.length >= 2) {
         const key = args[0];
-        const value = args[1];
+        const rawValue = args.slice(1).join(' ');
+        if (!SWARM_SETTING_HELP.some(item => item.key === key)) {
+            console.log(c.red(`\n  Unknown setting: ${key}`));
+            console.log(c.gray('  Type /swarm-config to list valid settings.'));
+            return;
+        }
         switch (key) {
             case 'maxAgents':
-                config.swarm.maxAgents = parseInt(value) || 5;
-                break;
             case 'maxRuntime':
-                config.swarm.maxRuntime = parseInt(value) || 600000;
+            case 'maxStepsPerAgent':
+            case 'maxFollowUpTasks': {
+                const numeric = parseInt(rawValue, 10);
+                if (!Number.isFinite(numeric) || numeric <= 0) {
+                    console.log(c.red(`\n  ${key} must be a positive number.`));
+                    return;
+                }
+                config.swarm[key] = numeric;
                 break;
+            }
             case 'safeMode':
-                config.swarm.safeMode = value === 'true';
+            case 'autoApplyChanges':
+            case 'allowShell':
+            case 'coordinatorReview':
+            case 'validateBuild':
+            case 'validateTests':
+            case 'dryRunMode': {
+                const parsed = parseBoolean(rawValue);
+                if (parsed == null) {
+                    console.log(c.red(`\n  ${key} must be true or false.`));
+                    return;
+                }
+                config.swarm[key] = parsed;
                 break;
+            }
+            case 'strategy':
+                if (!['fast', 'balanced', 'thorough'].includes(rawValue)) {
+                    console.log(c.red(`\n  strategy must be one of: fast, balanced, thorough.`));
+                    return;
+                }
+                config.swarm.strategy = rawValue;
+                break;
+            case 'specialistRoles': {
+                const parsed = parseSpecialistRoles(rawValue);
+                if (!parsed) {
+                    console.log(c.red(`\n  specialistRoles must be a comma-separated list from: ${SPECIALIST_ROLES.join(', ')}`));
+                    return;
+                }
+                config.swarm.specialistRoles = parsed;
+                break;
+            }
+            case 'plannerModel':
+            case 'coordinatorModel':
+            case 'workerModel':
             case 'workerCLI':
-                config.swarm.workerCLI = value;
+            case 'buildCommand':
+            case 'testCommand':
+                config.swarm[key] = rawValue;
                 break;
-            default:
-                console.log(c.red(`\n  Unknown setting: ${key}`));
-                return;
         }
         saveConfig(config);
-        console.log(c.green(`\n  Swarm config updated: ${key} = ${value}`));
+        swarmOrchestrator = null;
+        console.log(c.green(`\n  Swarm config updated: ${key} = ${rawValue}`));
         return;
     }
     console.log(`\n${c.bold('  Swarm Configuration')}`);
     console.log(DIVIDER);
-    console.log(`  ${c.gray('maxAgents:')}   ${c.cyan(String(config.swarm.maxAgents))}    ${c.gray('Max concurrent agents')}`);
-    console.log(`  ${c.gray('maxRuntime:')}  ${c.cyan(String(config.swarm.maxRuntime))}  ${c.gray('Max total runtime (ms)')}`);
-    console.log(`  ${c.gray('safeMode:')}    ${c.cyan(String(config.swarm.safeMode))}   ${c.gray('Require approval for all actions')}`);
-    console.log(`  ${c.gray('workerCLI:')}   ${c.cyan(config.swarm.workerCLI)}  ${c.gray('CLI tool for worker agents')}`);
-    console.log(`\n  ${c.gray('Usage: /swarm-config <key> <value>')}`);
+    for (const item of SWARM_SETTING_HELP) {
+        const value = formatSwarmSettingValue(config.swarm[item.key]);
+        console.log(`  ${c.gray(item.key + ':')} ${c.cyan(value)} ${c.gray(`— ${item.description}`)}`);
+    }
+    console.log();
+    console.log(`  ${c.gray('Usage: /swarm-config <key> <value>')}`);
+    console.log(`  ${c.gray('Reset defaults: /swarm-config reset')}`);
+    console.log(`  ${c.gray(`Valid specialist roles: ${SPECIALIST_ROLES.join(', ')}`)}`);
 }
 function printStatus() {
     const { provider, model } = getCurrentProvider();
@@ -417,6 +628,10 @@ function printStatus() {
     console.log(`  ${c.gray('API Key:')}     ${getApiKey() ? c.green('configured') : c.red('not set')}`);
     console.log(`  ${c.gray('Project:')}     ${c.blue(process.cwd())}`);
     console.log(`  ${c.gray('Swarm Mode:')}  ${swarmMode ? c.yellow('ON') : c.gray('OFF')}`);
+    console.log(`  ${c.gray('Swarm Team:')}  ${c.cyan(`${config.swarm.strategy} · ${config.swarm.maxAgents} workers max · ${config.swarm.coordinatorReview ? 'coordinator review on' : 'coordinator review off'}`)}`);
+    console.log(`  ${c.gray('Specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
+    console.log(`  ${c.gray('Swarm Safety:')} ${c.cyan(`${config.swarm.safeMode ? 'safe mode' : 'live mode'} · apply=${config.swarm.autoApplyChanges} · shell=${config.swarm.allowShell}`)}`);
+    console.log(`  ${c.gray('Validation:')}  ${c.cyan(`build=${config.swarm.validateBuild ? (config.swarm.buildCommand || 'auto') : 'off'} · test=${config.swarm.validateTests ? (config.swarm.testCommand || 'auto') : 'off'}`)}`);
     console.log(`  ${c.gray('History:')}     ${messageHistory.length} messages`);
     // Configured providers
     const configured = PROVIDERS.filter(p => getApiKey(p.id));

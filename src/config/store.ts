@@ -7,30 +7,44 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ProviderID, PROVIDERS } from '../services/ai/types.js';
+import { SPECIALIST_ROLES } from '../services/swarm/types.js';
+import type { SwarmConfig } from '../services/swarm/types.js';
 
 export interface VelixConfig {
     provider: ProviderID;
     model: string;
     apiKeys: Partial<Record<ProviderID, string>>;
-    swarm: {
-        maxAgents: number;
-        maxRuntime: number; // ms
-        safeMode: boolean;
-        workerCLI: string;
-    };
+    swarm: SwarmConfig;
     theme: 'default';
 }
+
+export const DEFAULT_SWARM_SETTINGS: SwarmConfig = {
+    maxAgents: 5,
+    maxRuntime: 600000,
+    maxStepsPerAgent: 12,
+    maxFollowUpTasks: 6,
+    safeMode: false,
+    autoApplyChanges: true,
+    allowShell: true,
+    coordinatorReview: true,
+    validateBuild: true,
+    validateTests: false,
+    specialistRoles: [...SPECIALIST_ROLES],
+    strategy: 'balanced',
+    plannerModel: '',
+    coordinatorModel: '',
+    workerModel: '',
+    workerCLI: 'claude',
+    buildCommand: '',
+    testCommand: '',
+    dryRunMode: false,
+};
 
 const DEFAULT_CONFIG: VelixConfig = {
     provider: 'claude',
     model: 'claude-sonnet-4-6',
     apiKeys: {},
-    swarm: {
-        maxAgents: 5,
-        maxRuntime: 600000,
-        safeMode: false,
-        workerCLI: 'claude',
-    },
+    swarm: { ...DEFAULT_SWARM_SETTINGS },
     theme: 'default',
 };
 

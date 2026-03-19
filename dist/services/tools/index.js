@@ -64,13 +64,37 @@ export function walkDir(dir, base, files = []) {
     }
     return files;
 }
-export function searchInFiles(directory, pattern, maxResults = 100) {
+function compileSearchPattern(pattern) {
+    try {
+        return new RegExp(pattern, 'i');
+    }
+    catch {
+        return null;
+    }
+}
+function matchesGlob(file, glob) {
+    if (!glob || glob === '**/*')
+        return true;
+    if (glob.startsWith('**/*.')) {
+        const extension = glob.slice(4);
+        return file.endsWith(extension);
+    }
+    if (glob.startsWith('*.')) {
+        const extension = glob.slice(1);
+        return file.endsWith(extension);
+    }
+    return file.includes(glob.replace(/\*\*/g, '').replace(/\*/g, ''));
+}
+export function searchInFiles(directory, pattern, maxResults = 100, options = {}) {
     const matches = [];
     const files = walkDir(directory, directory);
+    const regex = compileSearchPattern(pattern);
     const lowerPattern = pattern.toLowerCase();
     for (const file of files) {
         if (matches.length >= maxResults)
             break;
+        if (!matchesGlob(file, options.glob))
+            continue;
         const fullPath = path.join(directory, file);
         let content;
         try {
@@ -83,7 +107,8 @@ export function searchInFiles(directory, pattern, maxResults = 100) {
         for (let i = 0; i < lines.length; i++) {
             if (matches.length >= maxResults)
                 break;
-            const col = lines[i].toLowerCase().indexOf(lowerPattern);
+            const regexMatch = regex ? lines[i].match(regex) : null;
+            const col = regexMatch?.index ?? lines[i].toLowerCase().indexOf(lowerPattern);
             if (col !== -1) {
                 matches.push({ file, line: i + 1, column: col + 1, text: lines[i] });
             }

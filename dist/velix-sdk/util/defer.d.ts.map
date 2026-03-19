@@ -1,0 +1,1 @@
+{"version":3,"file":"defer.d.ts","sourceRoot":"","sources":["../../../src/velix-sdk/util/defer.ts"],"names":[],"mappings":"AAAA,wBAAgB,KAAK,CAAC,CAAC,KAAK;IAC1B,OAAO,EAAE,OAAO,CAAC,CAAC,CAAC,CAAA;IACnB,OAAO,EAAE,CAAC,KAAK,EAAE,CAAC,KAAK,IAAI,CAAA;IAC3B,MAAM,EAAE,CAAC,MAAM,CAAC,EAAE,OAAO,KAAK,IAAI,CAAA;CACnC,CAQA"}

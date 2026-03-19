@@ -2,7 +2,28 @@
  * Swarm orchestration types - ported from Velix desktop
  */
 
-export type AgentRoleType = 'planner' | 'implementer' | 'tester' | 'reviewer' | 'refactorer' | 'architect' | 'debugger' | 'documenter';
+export type AgentRoleType =
+    | 'coordinator'
+    | 'planner'
+    | 'implementer'
+    | 'tester'
+    | 'reviewer'
+    | 'refactorer'
+    | 'architect'
+    | 'debugger'
+    | 'documenter';
+
+export type SpecialistRole = Exclude<AgentRoleType, 'coordinator' | 'planner'>;
+
+export const SPECIALIST_ROLES: SpecialistRole[] = [
+    'implementer',
+    'tester',
+    'reviewer',
+    'refactorer',
+    'architect',
+    'debugger',
+    'documenter',
+];
 
 export type AgentStatus = 'idle' | 'working' | 'completed' | 'failed' | 'terminated';
 
@@ -58,6 +79,22 @@ export interface SubtaskResult {
     duration: number;
 }
 
+export type SwarmActivity =
+    | {
+        type: 'thought';
+        agentId: string;
+        role: AgentRoleType;
+        text: string;
+    }
+    | {
+        type: 'tool';
+        agentId: string;
+        role: AgentRoleType;
+        tool: string;
+        args: Record<string, unknown>;
+        summary: string;
+    };
+
 export interface SafetyConfig {
     maxRuntimePerAgent: number;
     maxTotalRuntime: number;
@@ -73,7 +110,21 @@ export interface SafetyConfig {
 export interface SwarmConfig {
     maxAgents: number;
     maxRuntime: number;
+    maxStepsPerAgent: number;
+    maxFollowUpTasks: number;
     safeMode: boolean;
+    autoApplyChanges: boolean;
+    allowShell: boolean;
+    coordinatorReview: boolean;
+    validateBuild: boolean;
+    validateTests: boolean;
+    specialistRoles: SpecialistRole[];
+    strategy: 'fast' | 'balanced' | 'thorough';
+    plannerModel: string;
+    coordinatorModel: string;
+    workerModel: string;
     workerCLI: string;
+    buildCommand: string;
+    testCommand: string;
     dryRunMode: boolean;
 }
