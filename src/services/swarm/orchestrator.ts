@@ -14,6 +14,7 @@ import {
 } from './types.js';
 import { getRoleDefinition } from './roles.js';
 import { readProjectSources, execShell, readFile, writeFile, searchInFiles, listDir, editFile } from '../tools/index.js';
+import { PROVIDERS } from '../ai/types.js';
 import type { ChatMessage, ProviderID } from '../ai/types.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -57,6 +58,32 @@ const FORBIDDEN_COMMANDS = [
     'rm -rf /', 'rm -rf /*', 'sudo rm', ':(){:|:&};:', '> /dev/sda',
     'dd if=', 'mkfs', 'chmod -R 777 /', 'chown -R',
 ];
+
+/**
+ * Extract the first balanced JSON object from a string.
+ * Avoids the greedy-regex pitfall where /\{[\s\S]*\}/ matches from the first
+ * opening brace to the very last closing brace, spanning across multiple objects.
+ */
+function extractFirstJSON(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\' && inString) { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return text.slice(start, i + 1);
+        }
+    }
+    return null;
+}
 
 type AgentToolName = 'search' | 'read' | 'list' | 'shell' | 'write' | 'edit' | 'finish';
 
@@ -140,8 +167,7 @@ export class SwarmOrchestrator {
         }
 
         const velixConfig = loadConfig();
-        const apiKey = getApiKey();
-        if (!apiKey) throw new Error('No API key configured');
+        const { provider: workerProvider, apiKey: workerApiKey } = this.resolveProviderAndKey('worker');
 
         const roleDef = getRoleDefinition(agent.role);
         const systemPrompt = `${roleDef.systemPrompt}\n\nYou are agent "${agent.id}" with role "${agent.role}".`
@@ -152,9 +178,9 @@ export class SwarmOrchestrator {
         const response = await this.send({
             text: message,
             system: systemPrompt,
-            provider: velixConfig.provider,
-            model: this.resolveModel('worker', velixConfig.model),
-            apiKey,
+            provider: workerProvider,
+            model: this.resolveModel('worker', velixConfig.model, workerProvider),
+            apiKey: workerApiKey,
             signal: this.abortController?.signal,
         });
 
@@ -261,7 +287,7 @@ export class SwarmOrchestrator {
             text: prompt,
             system: plannerRole.systemPrompt,
             provider,
-            model: this.resolveModel('planner', velixConfig.model),
+            model: this.resolveModel('planner', velixConfig.model, provider),
             apiKey,
             signal: this.abortController?.signal,
         });
@@ -271,13 +297,13 @@ export class SwarmOrchestrator {
 
     private parsePlan(response: string): TaskPlan {
         // Extract JSON from response
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        const jsonMatch = extractFirstJSON(response);
         if (!jsonMatch) {
             return this.fallbackPlan();
         }
 
         try {
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(jsonMatch);
             const subtasks = Array.isArray(parsed.subtasks) ? parsed.subtasks : [];
             if (subtasks.length === 0) {
                 return this.fallbackPlan();
@@ -364,10 +390,23 @@ export class SwarmOrchestrator {
         });
     }
 
-    private resolveModel(kind: 'planner' | 'coordinator' | 'worker', fallback: string): string {
-        if (kind === 'planner') return this.config.plannerModel || this.config.coordinatorModel || fallback;
-        if (kind === 'coordinator') return this.config.coordinatorModel || this.config.plannerModel || fallback;
-        return this.config.workerModel || fallback;
+    private resolveModel(kind: 'planner' | 'coordinator' | 'worker', fallback: string, effectiveProvider?: ProviderID): string {
+        let modelOverride: string;
+        if (kind === 'planner') modelOverride = this.config.plannerModel || this.config.coordinatorModel || '';
+        else if (kind === 'coordinator') modelOverride = this.config.coordinatorModel || this.config.plannerModel || '';
+        else modelOverride = this.config.workerModel || '';
+
+        if (modelOverride) return modelOverride;
+
+        // When a different provider is explicitly configured, fall back to that provider's
+        // first model rather than the main config model (which may belong to a different provider).
+        const velixConfig = loadConfig();
+        if (effectiveProvider && effectiveProvider !== velixConfig.provider) {
+            const providerDef = PROVIDERS.find(p => p.id === effectiveProvider);
+            if (providerDef && providerDef.models.length > 0) return providerDef.models[0];
+        }
+
+        return fallback;
     }
 
     /**
@@ -376,11 +415,14 @@ export class SwarmOrchestrator {
      */
     private resolveProviderAndKey(kind: 'planner' | 'coordinator' | 'worker'): { provider: ProviderID; apiKey: string } {
         const velixConfig = loadConfig();
-        let providerOverride = '';
-        if (kind === 'planner' || kind === 'coordinator') {
-            providerOverride = this.config.coordinatorProvider;
-        } else {
-            providerOverride = this.config.workerProvider;
+        const providerOverride = (kind === 'worker' ? this.config.workerProvider : this.config.coordinatorProvider).trim();
+
+        if (providerOverride && !PROVIDERS.find(p => p.id === providerOverride)) {
+            const settingKey = kind === 'worker' ? 'workerProvider' : 'coordinatorProvider';
+            throw new Error(
+                `Unknown provider "${providerOverride}" set for ${kind}. ` +
+                `Run /swarm-config ${settingKey} <provider-id> with one of: ${PROVIDERS.map(p => p.id).join(', ')}`,
+            );
         }
 
         const provider = (providerOverride || velixConfig.provider) as ProviderID;
@@ -549,7 +591,7 @@ Rules:
             text: prompt,
             system: getRoleDefinition('coordinator').systemPrompt,
             provider: coordProvider,
-            model: this.resolveModel('coordinator', velixConfig.model),
+            model: this.resolveModel('coordinator', velixConfig.model, coordProvider),
             apiKey: coordApiKey,
             signal: this.abortController?.signal,
         });
@@ -558,13 +600,13 @@ Rules:
     }
 
     private parseCoordinatorReview(response: string, completedBatch: SubtaskResult[]): CoordinatorReview {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        const jsonMatch = extractFirstJSON(response);
         if (!jsonMatch) {
             return this.heuristicCoordinatorReview(completedBatch);
         }
 
         try {
-            const parsed = JSON.parse(jsonMatch[0]) as {
+            const parsed = JSON.parse(jsonMatch) as {
                 status?: string;
                 summary?: string;
                 additionalSubtasks?: Array<Partial<Subtask>>;
@@ -663,7 +705,7 @@ Rules:
                     text: prompt,
                     system: this.buildToolSystemPrompt(role.type),
                     provider: workerProvider,
-                    model: this.resolveModel('worker', velixConfig.model),
+                    model: this.resolveModel('worker', velixConfig.model, workerProvider),
                     apiKey: workerApiKey,
                     messageHistory: conversation,
                     signal: this.abortController?.signal,
@@ -839,11 +881,11 @@ Start by inspecting the codebase or relevant files, then make changes or validat
     }
 
     private parseDecision(response: string): AgentDecision | null {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        const jsonMatch = extractFirstJSON(response);
         if (!jsonMatch) return null;
 
         try {
-            const parsed = JSON.parse(jsonMatch[0]) as Partial<AgentDecision>;
+            const parsed = JSON.parse(jsonMatch) as Partial<AgentDecision>;
             if (!parsed.action || typeof parsed.action !== 'object' || typeof parsed.action.tool !== 'string') {
                 return null;
             }

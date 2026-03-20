@@ -75,15 +75,19 @@ function compileSearchPattern(pattern) {
 function matchesGlob(file, glob) {
     if (!glob || glob === '**/*')
         return true;
-    if (glob.startsWith('**/*.')) {
-        const extension = glob.slice(4);
-        return file.endsWith(extension);
+    // Convert glob to a regex: ** matches across path segments, * matches within one segment
+    const regexStr = glob
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&') // escape regex metacharacters (not * or ?)
+        .replace(/\*\*/g, '\x00') // protect ** before handling *
+        .replace(/\*/g, '[^/]*') // * matches within a single path segment
+        .replace(/\x00/g, '.*') // ** matches across segments
+        .replace(/\?/g, '[^/]'); // ? matches one character
+    try {
+        return new RegExp(`^${regexStr}$`).test(file);
     }
-    if (glob.startsWith('*.')) {
-        const extension = glob.slice(1);
-        return file.endsWith(extension);
+    catch {
+        return file.includes(glob);
     }
-    return file.includes(glob.replace(/\*\*/g, '').replace(/\*/g, ''));
 }
 export function searchInFiles(directory, pattern, maxResults = 100, options = {}) {
     const matches = [];

@@ -42,7 +42,7 @@ export const DEFAULT_SWARM_SETTINGS: SwarmConfig = {
     dryRunMode: false,
 };
 
-const DEFAULT_CONFIG: VelixConfig = {
+export const DEFAULT_CONFIG: VelixConfig = {
     provider: 'claude',
     model: 'claude-sonnet-4-6',
     apiKeys: {},

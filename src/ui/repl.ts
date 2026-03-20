@@ -1,13 +1,12 @@
 /**
- * VelixREPL - Interactive terminal REPL with slash commands, AI chat, and swarm mode.
- * This is the main user-facing interface, similar to Claude Code.
+ * Velix REPL - Clean terminal UI like Claude Code.
  */
 
 import readline from 'node:readline';
 import path from 'node:path';
 import { sendMessage } from '../services/ai/engine.js';
 import {
-    loadConfig, saveConfig, getApiKey, setApiKey, DEFAULT_SWARM_SETTINGS,
+    loadConfig, saveConfig, getApiKey, setApiKey, DEFAULT_SWARM_SETTINGS, DEFAULT_CONFIG,
     setProvider, getCurrentProvider,
 } from '../config/store.js';
 import { PROVIDERS, ProviderID, ChatMessage } from '../services/ai/types.js';
@@ -16,17 +15,73 @@ import {
     readFile, writeFile, editFile, listDir, searchInFiles,
     execShell, gitStatus, gitDiff, gitLog, readProjectSources,
 } from '../services/tools/index.js';
-import { c, VELIX_LOGO, DIVIDER, formatProvider, renderMarkdown, formatTimestamp } from './theme.js';
-import { drawInputDivider, drawInputBoxBorder, drawInputSideHint, Spinner } from './components.js';
+import { c, formatProvider, renderMarkdown } from './theme.js';
+import { Spinner, divider, getWidth, printUserMessage, printAssistantMessage, section, stripAnsi } from './components.js';
 import { printSwarmActivity, formatElapsed } from './swarm-trace.js';
 import { SPECIALIST_ROLES } from '../services/swarm/types.js';
 
 // ─── State ──────────────────────────────────────────────────
 
+type CompletionMode = 'build' | 'plan' | 'debug';
+
 let messageHistory: ChatMessage[] = [];
 let swarmMode = false;
 let swarmOrchestrator: SwarmOrchestrator | null = null;
 let currentAbortController: AbortController | null = null;
+let completionMode: CompletionMode = 'build';
+let autoApply = true;
+let approvalMode = true; // Ask before editing/writing files
+
+// ─── Yes/No Prompt ───────────────────────────────────────────
+
+async function promptYesNo(question: string, rl: readline.Interface): Promise<boolean> {
+    return new Promise((resolve) => {
+        let selected = 0;
+        const options = ['Yes', 'No'];
+        
+        const render = () => {
+            process.stdout.write('\r\x1b[2K'); // Clear line
+            process.stdout.write(`  ${question}\n`);
+            for (let i = 0; i < options.length; i++) {
+                const arrow = i === selected ? c.green('▶') : ' ';
+                const highlight = i === selected ? c.bold : (s: string) => s;
+                console.log(`    ${arrow} ${highlight(options[i])}`);
+            }
+            process.stdout.write('\r');
+        };
+        
+        render();
+        
+        const handler = (ch: string | null, key: { name: string; sequence?: string }) => {
+            if (key.name === 'up' || key.name === 'k') {
+                selected = (selected - 1 + options.length) % options.length;
+                render();
+            } else if (key.name === 'down' || key.name === 'j') {
+                selected = (selected + 1) % options.length;
+                render();
+            } else if (key.name === 'enter') {
+                process.stdin.off('keypress', handler);
+                process.stdout.write('\x1b[2K\r'); // Clear prompts
+                resolve(selected === 0);
+            } else if (key.name === 'escape' || key.name === 'q') {
+                process.stdin.off('keypress', handler);
+                process.stdout.write('\x1b[2K\r');
+                resolve(false); // Default to No on cancel
+            }
+        };
+        
+        process.stdin.on('keypress', handler);
+    });
+}
+
+// ─── Approval Handler ─────────────────────────────────────────
+
+async function checkApproval(action: string, target: string, rl: readline.Interface): Promise<boolean> {
+    if (!approvalMode) return true;
+    
+    const question = `${action} ${c.cyan(target)}?`;
+    return promptYesNo(question, rl);
+}
 
 // ─── REPL ───────────────────────────────────────────────────
 
@@ -40,75 +95,28 @@ export function startREPL(): void {
         historySize: 200,
     });
 
-    let promptVisible = false;
-    let lastPromptCursorRows = 0;
-    const readlineWithInternals = rl as readline.Interface & { _refreshLine?: () => void };
-    const refreshLine = readlineWithInternals._refreshLine?.bind(rl);
-    const renderPromptChrome = () => {
-        drawInputSideHint(rl);
-        drawInputBoxBorder(rl, swarmMode);
-        lastPromptCursorRows = rl.getCursorPos().rows;
-    };
-
-    if (refreshLine) {
-        readlineWithInternals._refreshLine = () => {
-            refreshLine();
-            renderPromptChrome();
-        };
-    }
-
-    const showPrompt = () => {
-        promptVisible = true;
-        drawInputDivider(swarmMode);
-        rl.prompt();
-    };
-
-    const redrawPrompt = () => {
-        if (!promptVisible) return;
-        process.stdout.write(`\x1b[${lastPromptCursorRows + 1}A\r\x1b[J`);
-        drawInputDivider(swarmMode);
-        if (refreshLine) {
-            refreshLine();
-            renderPromptChrome();
-            return;
-        }
-        rl.prompt(true);
-        renderPromptChrome();
-    };
-
-    process.stdout.on('resize', redrawPrompt);
-    showPrompt();
-
-    rl.on('line', async (line) => {
-        const input = line.trim();
-        if (!input) {
-            // Move up past the bottom border + the newline readline added, redraw in-place
-            process.stdout.write(`\x1b[${lastPromptCursorRows + 2}A\r\x1b[J`);
-            drawInputDivider(swarmMode);
-            if (refreshLine) {
-                refreshLine();
-                renderPromptChrome();
-            } else {
-                rl.prompt(true);
-                renderPromptChrome();
-            }
+    rl.on('line', async (input) => {
+        const trimmed = input.trim();
+        
+        if (!trimmed) {
+            rl.prompt();
             return;
         }
 
-        promptVisible = false;
-        // Close the input box (plain bottom border after user submits)
-        drawInputDivider(swarmMode);
+        // User message
+        printUserMessage(trimmed);
+        console.log(divider('light'));
 
         // Handle Ctrl-C during processing
         currentAbortController = new AbortController();
 
         try {
-            if (input.startsWith('/')) {
-                await handleSlashCommand(input, rl);
+            if (trimmed.startsWith('/')) {
+                await handleSlashCommand(trimmed, rl);
             } else if (swarmMode) {
-                await handleSwarmInput(input);
+                await handleSwarmInput(trimmed);
             } else {
-                await handleChat(input);
+                await handleChat(trimmed, rl);
             }
         } catch (err) {
             if ((err as Error).name === 'AbortError') {
@@ -120,7 +128,7 @@ export function startREPL(): void {
 
         currentAbortController = null;
         rl.setPrompt(getPrompt());
-        showPrompt();
+        rl.prompt();
     });
 
     rl.on('SIGINT', () => {
@@ -128,46 +136,99 @@ export function startREPL(): void {
             currentAbortController.abort();
             console.log(c.yellow('\n  Interrupting...'));
         } else {
-            console.log(c.gray('\n  (Use /exit to quit, Ctrl-C again to force quit)'));
-            showPrompt();
+            console.log(c.gray('\n  (Use /exit to quit)'));
+            rl.prompt();
         }
     });
 
     rl.on('close', () => {
-        process.stdout.off('resize', redrawPrompt);
         console.log(c.gray('\n  Goodbye!\n'));
         process.exit(0);
     });
+
+    // Tab to cycle completion modes
+    process.stdin.on('keypress', (_ch, key) => {
+        if (key && key.name === 'tab') {
+            const modes: CompletionMode[] = ['build', 'plan', 'debug'];
+            const idx = modes.indexOf(completionMode);
+            completionMode = modes[(idx + 1) % modes.length];
+            rl.setPrompt(getPrompt());
+            rl.prompt(true);
+        }
+    });
+
+    rl.prompt();
 }
 
 function getPrompt(): string {
-    const modeTag = swarmMode ? c.boldYellow('SWARM ') : '';
-    return `${modeTag}${c.purple('❯')} `;
+    const prefix = swarmMode ? c.boldYellow('◆') : c.purple('❯');
+    return `${prefix} `;
 }
+
+function printFooter(): void {
+    console.log(divider('light'));
+    console.log(c.dim('  ? for shortcuts') + c.gray('                              ') + c.dim('Use meta+t to toggle thinking'));
+    console.log(); // Bottom margin
+    console.log(); // Bottom margin
+    console.log(); // Bottom margin
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Welcome Box - Claude Code style
+// ═══════════════════════════════════════════════════════════════
+
+const BOX = {
+    tl: '╭', tr: '╮', bl: '╰', br: '╯',
+    h: '─', v: '│',
+};
 
 function printWelcome(): void {
-    console.log(VELIX_LOGO);
-    console.log(`  ${c.bold('Velix AI CLI')} ${c.gray('v0.1.0')}`);
-    console.log(`  ${c.gray('Multi-provider AI coding assistant with swarm orchestration')}`);
-    console.log();
-
     const { provider, model } = getCurrentProvider();
-    const apiKey = getApiKey();
+    const width = getWidth();
+    const innerWidth = Math.max(60, width - 2);
 
-    console.log(`  ${c.gray('Provider:')} ${formatProvider(provider, model)}`);
-    console.log(`  ${c.gray('API Key:')}  ${apiKey ? c.green('configured') : c.red('not set — run /config')}`);
-    console.log(`  ${c.gray('Project:')}  ${c.blue(process.cwd())}`);
-    console.log();
-    console.log(`  ${c.gray('Type a message to chat, or use slash commands:')}`);
-    console.log(`  ${c.purple('/help')}  ${c.gray('Show all commands')}    ${c.purple('/swarm')}  ${c.gray('Enter swarm mode')}`);
-    console.log(`  ${c.purple('/model')} ${c.gray('Switch AI model')}     ${c.purple('/config')} ${c.gray('Configure API keys')}`);
-    console.log(`  ${c.purple('/swarm-setup')} ${c.gray('Tune coordinator and worker settings')}`);
+    // Single column centered layout
+    const lines = [
+        '',
+        '                 Welcome back!                 ',
+        '',
+        '      ██╗   ██╗███████╗██╗     ██╗██╗  ██╗      ',
+        '      ██║   ██║██╔════╝██║     ██║╚██╗██╔╝      ',
+        '      ██║   ██║█████╗  ██║     ██║ ╚███╔╝       ',
+        '      ╚██╗ ██╔╝██╔══╝  ██║     ██║ ██╔██╗       ',
+        '       ╚████╔╝ ███████╗███████╗██║██╔╝ ██╗      ',
+        '        ╚═══╝  ╚══════╝╚══════╝╚═╝╚═╝  ╚═╝      ',
+        '',
+        `                  ${c.boldCyan('Velix')}                   `,
+        `               ${c.gray(model)}               `,
+        `       ${c.blue('~' + process.cwd().replace(process.env.HOME || '/', ''))}       `,
+        '',
+    ];
+
+    // Top border with title
+    const title = c.bold(' Velix CLI ');
+    const titleLen = stripAnsi(title);
+    const leftBar = innerWidth - titleLen;
+    const leftChars = Math.floor(leftBar / 2);
+    const rightChars = leftBar - leftChars;
+    console.log(c.gray(BOX.tl + BOX.h.repeat(leftChars) + title + BOX.h.repeat(rightChars) + BOX.tr));
+    
+    for (const line of lines) {
+        const len = stripAnsi(line);
+        const pad = Math.max(0, innerWidth - len);
+        const left = Math.floor(pad / 2);
+        const right = pad - left;
+        console.log(c.gray(BOX.v) + ' '.repeat(left) + line + ' '.repeat(right) + c.gray(BOX.v));
+    }
+    
+    // Bottom border
+    console.log(c.gray(BOX.bl + BOX.h.repeat(innerWidth) + BOX.br));
     console.log();
 }
 
-// ─── Chat Handler ───────────────────────────────────────────
+// ─── Chat ───────────────────────────────────────────────────
 
-async function handleChat(input: string): Promise<void> {
+async function handleChat(input: string, rl: readline.Interface): Promise<void> {
     const config = loadConfig();
     const apiKey = getApiKey();
     if (!apiKey) {
@@ -175,30 +236,29 @@ async function handleChat(input: string): Promise<void> {
         return;
     }
 
-    // Build system prompt with project context
-    let system = `You are Velix, an expert AI coding assistant running in a terminal CLI.
-You help users write, debug, refactor, and understand code.
+    let system = `You are Velix, an expert AI coding assistant in a terminal.
+Be concise and direct. Use code blocks with file paths for changes.
+Working directory: ${process.cwd()}
 
-Rules:
-- Be concise and direct. Avoid unnecessary preamble.
-- When suggesting code changes, always show the file path and use fenced code blocks with the language.
-- When multiple files need changes, show each file separately with its full path.
-- If the user asks about their project, reference actual file names and code from the context below.
-- For complex tasks, break them into clear numbered steps.
-- If unsure, say so rather than guessing.
+Current mode: ${completionMode}
+- build: Implement features, write code, run tests
+- plan: Analyze and plan approach, don't make changes
+- debug: Find and fix bugs, add logging
 
-Working directory: ${process.cwd()}`;
+${approvalMode 
+    ? 'APPROVAL REQUIRED: When you want to edit a file or run a shell command, ask first using: [CONFIRM] Should I <action>? Then wait for user confirmation before proceeding.'
+    : 'No approval required - proceed with edits automatically.'}`;
 
-    // Add file context if referencing current project
+    // Get project context
     try {
         const sources = readProjectSources(process.cwd(), 15_000);
         const fileList = Object.keys(sources);
         if (fileList.length > 0) {
-            system += `\n\nThe user is working in a project with these files:\n${fileList.slice(0, 30).join('\n')}`;
+            system += `\n\nProject files:\n${fileList.slice(0, 30).join('\n')}`;
         }
     } catch { /* ignore */ }
 
-    const spinner = new Spinner('Thinking', 'pulse');
+    const spinner = new Spinner('Thinking');
     process.stdout.write('\n');
     spinner.start();
     const startedAt = Date.now();
@@ -219,21 +279,50 @@ Working directory: ${process.cwd()}`;
     }
 
     // Store in history
-    messageHistory.push({ role: 'user', content: input });
-    messageHistory.push({ role: 'assistant', content: response });
+    if (response) {
+        messageHistory.push({ role: 'user', content: input });
+        messageHistory.push({ role: 'assistant', content: response });
+    }
 
-    // Trim history to last 20 messages
+    // Trim history
     if (messageHistory.length > 40) {
         messageHistory = messageHistory.slice(-40);
     }
 
-    // Render response
+    // Print response
     console.log();
     console.log(renderMarkdown(response));
-    console.log();
+
+    // Check for confirmation requests and handle them
+    if (approvalMode) {
+        const confirmMatch = response.match(/\[CONFIRM\](.+?)(?:\n|$)/i);
+        if (confirmMatch) {
+            const question = confirmMatch[1].trim();
+            const approved = await promptYesNo(question, rl);
+            if (approved) {
+                console.log(c.green('\n  ✓ Approved - continuing...\n'));
+                // Continue with the action - send a follow-up to the AI
+                const followUp = await sendMessage({
+                    text: 'User approved. Please proceed with the action you planned.',
+                    system,
+                    provider: config.provider,
+                    model: config.model,
+                    apiKey,
+                    messageHistory: [...messageHistory, { role: 'user', content: input }, { role: 'assistant', content: response }],
+                    signal: currentAbortController?.signal,
+                });
+                console.log();
+                console.log(renderMarkdown(followUp));
+            } else {
+                console.log(c.yellow('\n  ✗ Denied - cancelled.\n'));
+            }
+        }
+    }
+
+    printFooter();
 }
 
-// ─── Swarm Handler ──────────────────────────────────────────
+// ─── Swarm ──────────────────────────────────────────────────
 
 async function handleSwarmInput(input: string): Promise<void> {
     if (!swarmOrchestrator) {
@@ -258,22 +347,14 @@ async function handleSwarmInput(input: string): Promise<void> {
                         return;
                     }
                 }
-
-                const prefix = type === 'warn'
-                    ? c.yellow(' !')
-                    : type === 'error'
-                        ? c.red(' ✗')
-                        : type === 'success'
-                            ? c.green(' ✓')
-                            : '';
-                if (prefix) {
-                    console.log(`  ${prefix} ${msg}`);
-                }
+                const prefix = type === 'warn' ? c.yellow(' !')
+                    : type === 'error' ? c.red(' ✗')
+                    : type === 'success' ? c.green(' ✓')
+                    : '';
+                if (prefix) console.log(`  ${prefix} ${msg}`);
             },
             onStateChange: () => {},
-            onActivity: (activity) => {
-                printSwarmActivity(activity);
-            },
+            onActivity: (activity) => printSwarmActivity(activity),
             onAgentUpdate: (agent) => {
                 if (agent.role === 'coordinator') {
                     if (agent.status === 'failed') {
@@ -282,7 +363,7 @@ async function handleSwarmInput(input: string): Promise<void> {
                     return;
                 }
                 if (agent.status === 'working') {
-                    console.log(`  ${c.purple('◆')} ${c.bold(agent.role)} ${c.gray(agent.currentTask ?? 'working')}`);
+                    console.log(`  ${c.yellow('◆')} ${c.bold(agent.role)} ${c.gray(agent.currentTask ?? 'working')}`);
                     return;
                 }
                 if (agent.status === 'completed') {
@@ -295,15 +376,12 @@ async function handleSwarmInput(input: string): Promise<void> {
             },
             onComplete: (task) => {
                 console.log();
-                console.log(DIVIDER);
+                console.log(divider('dotted'));
                 console.log(`  ${c.boldGreen('Swarm Task Complete')}`);
-                console.log(`  ${c.gray('Agents used:')} ${task.agents.length}`);
+                console.log(`  ${c.gray('Agents:')} ${task.agents.length}`);
                 console.log(`  ${c.gray('Duration:')} ${task.completedAt ? formatElapsed(task.completedAt.getTime() - task.createdAt.getTime()) : '?'}`);
                 console.log(`  ${c.gray('Status:')} ${task.status === 'completed' ? c.green('SUCCESS') : c.red('FAILED')}`);
-                if (task.completedAt) {
-                    console.log(`  ${c.gray('✻')} ${c.gray('Crunched for')} ${c.cyan(formatElapsed(task.completedAt.getTime() - task.createdAt.getTime()))}`);
-                }
-                console.log(DIVIDER);
+                console.log(divider('dotted'));
             },
         };
 
@@ -312,12 +390,12 @@ async function handleSwarmInput(input: string): Promise<void> {
 
     console.log();
     console.log(`  ${c.boldYellow('SWARM')} ${c.gray('Orchestrating task...')}`);
-    console.log(DIVIDER);
+    console.log(divider('light'));
 
     await swarmOrchestrator.execute(input);
 }
 
-// ─── Slash Commands ─────────────────────────────────────────
+// ─── Slash commands ──────────────────────────────────────────
 
 async function handleSlashCommand(input: string, rl: readline.Interface): Promise<void> {
     const parts = input.split(/\s+/);
@@ -328,113 +406,113 @@ async function handleSlashCommand(input: string, rl: readline.Interface): Promis
         case '/help':
             printHelp();
             break;
-
         case '/exit':
         case '/quit':
             console.log(c.gray('\n  Goodbye!\n'));
             process.exit(0);
-
-        case '/uninstall':
-            await handleUninstall(rl);
-            break;
-
         case '/clear':
             messageHistory = [];
             console.clear();
             printWelcome();
             break;
-
         case '/config':
-            await handleConfig(args, rl);
+            await handleConfig(args);
             break;
-
         case '/model':
-            await handleModelSwitch(args, rl);
+            await handleModelSwitch(args);
             break;
-
         case '/provider':
-            await handleProviderSwitch(args, rl);
+            await handleProviderSwitch(args);
             break;
-
         case '/swarm':
             swarmMode = !swarmMode;
+            rl.setPrompt(getPrompt());
             if (swarmMode) {
                 console.log();
-                console.log(`  ${c.boldYellow('SWARM MODE ACTIVATED')}`);
-                console.log(`  ${c.gray('Your messages will be executed as coordinated multi-agent swarm tasks.')}`);
-                console.log(`  ${c.gray('A coordinator will plan, dispatch specialists, review results, and queue follow-up work.')}`);
-                console.log(`  ${c.gray('Type /swarm again to return to normal chat mode.')}`);
-                console.log(`  ${c.gray('Type /swarm-config to configure swarm settings.')}`);
-                console.log(`  ${c.gray('Type /swarm-setup for a guided config overview.')}`);
-                console.log(DIVIDER);
+                console.log(`  ${c.boldYellow('SWARM MODE')} ${c.gray('activated')}`);
+                console.log(`  ${c.gray('Your messages will be executed as coordinated multi-agent tasks.')}`);
+                console.log(divider('light'));
             } else {
                 swarmOrchestrator = null;
-                console.log(`\n  ${c.gray('Swarm mode deactivated. Back to normal chat.')}`);
+                console.log(`  ${c.gray('Swarm mode deactivated.')}`);
             }
             break;
-
         case '/swarm-setup':
             printSwarmSetup();
             break;
-
         case '/swarm-config':
             handleSwarmConfig(args);
             break;
-
         case '/swarm-stop':
             if (swarmOrchestrator) {
                 swarmOrchestrator.abort();
-                console.log(c.red('\n  Swarm emergency stop triggered.'));
+                console.log(c.red('\n  Swarm stopped.'));
             } else {
                 console.log(c.gray('\n  No active swarm session.'));
             }
             break;
-
         case '/agents':
             printAgents();
             break;
-
-        case '/msg':
-            await handleMessageAgent(args);
-            break;
-
         case '/status':
             printStatus();
             break;
-
+        case '/reset':
+            saveConfig(DEFAULT_CONFIG);
+            console.log(c.green('\n  Config reset to defaults.'));
+            break;
         case '/files':
             handleFiles(args);
             break;
-
         case '/search':
             handleSearch(args);
             break;
-
         case '/shell':
         case '/sh':
             handleShell(args);
             break;
-
         case '/git':
             handleGit(args);
             break;
-
         case '/read':
             handleRead(args);
             break;
-
         case '/history':
             printHistory();
             break;
-
-        case '/compact':
-            compactHistory();
+        case '/auto-apply':
+            autoApply = !autoApply;
+            console.log(c.green(`\n  Auto-apply: ${autoApply ? 'ON' : 'OFF'}`));
+            if (!autoApply) {
+                console.log(c.gray('  AI will ask for permission before applying changes.'));
+            } else {
+                console.log(c.gray('  AI will apply changes automatically.'));
+            }
             break;
-
-        case '/init':
-            handleInit();
+        case '/approval':
+            approvalMode = !approvalMode;
+            console.log(c.green(`\n  Approval mode: ${approvalMode ? 'ON' : 'OFF'}`));
+            if (approvalMode) {
+                console.log(c.gray('  AI will ask before editing files or running commands.'));
+            } else {
+                console.log(c.gray('  AI will run commands without asking.'));
+            }
             break;
-
+        case '/mode':
+            if (args.length > 0) {
+                const mode = args[0] as CompletionMode;
+                if (['build', 'plan', 'debug'].includes(mode)) {
+                    completionMode = mode;
+                    console.log(c.green(`\n  Mode: ${completionMode}`));
+                } else {
+                    console.log(c.red('\n  Invalid mode. Use: build, plan, or debug'));
+                }
+            } else {
+                console.log(c.gray(`\n  Current mode: ${completionMode}`));
+                console.log(c.gray('  Use /mode <build|plan|debug> to switch'));
+                console.log(c.gray('  Or press Tab to cycle through modes'));
+            }
+            break;
         default:
             console.log(c.yellow(`\n  Unknown command: ${cmd}. Type /help for available commands.`));
     }
@@ -443,48 +521,49 @@ async function handleSlashCommand(input: string, rl: readline.Interface): Promis
 function printHelp(): void {
     console.log(`
 ${c.boldPurple('  Velix CLI Commands')}
-${DIVIDER}
+${divider('light')}
 
-  ${c.bold('Chat & AI')}
-    ${c.purple('/model')}  [model]        ${c.gray('Switch AI model')}
-    ${c.purple('/provider')} [provider]   ${c.gray('Switch AI provider')}
-    ${c.purple('/config')}                ${c.gray('Configure API keys')}
-    ${c.purple('/clear')}                 ${c.gray('Clear conversation history')}
-    ${c.purple('/history')}               ${c.gray('Show conversation history')}
-    ${c.purple('/compact')}               ${c.gray('Summarize and compact history')}
+${c.bold('Chat & AI')}
+  ${c.purple('/model')}      Switch AI model
+  ${c.purple('/provider')}   Switch AI provider  
+  ${c.purple('/config')}    Configure API keys
+  ${c.purple('/clear')}     Clear conversation history
+  ${c.purple('/history')}   Show conversation history
 
-  ${c.bold('Swarm Mode')}
-    ${c.purple('/swarm')}                 ${c.gray('Toggle swarm mode on/off')}
-    ${c.purple('/swarm-setup')}           ${c.gray('Show coordinator/team setup guidance')}
-    ${c.purple('/swarm-config')}          ${c.gray('Configure swarm settings')}
-    ${c.purple('/swarm-stop')}            ${c.gray('Emergency stop all agents')}
-    ${c.purple('/agents')}                ${c.gray('List all swarm agents and their status')}
-    ${c.purple('/msg')} <agent> <text>    ${c.gray('Send a direct message to an agent')}
+${c.bold('Mode (Tab to cycle)')}
+  ${c.purple('/mode')}        Show/set mode (build/plan/debug)
+  ${c.purple('/auto-apply')}  Toggle auto-apply edits
+  ${c.purple('/approval')}   Toggle approval mode (ask before edits)
 
-  ${c.bold('Tools')}
-    ${c.purple('/files')}                 ${c.gray('List project files')}
-    ${c.purple('/search')} <pattern>      ${c.gray('Search in project files')}
-    ${c.purple('/read')} <file>           ${c.gray('Read a file')}
-    ${c.purple('/shell')} <command>       ${c.gray('Execute a shell command')}
-    ${c.purple('/git')} [status|log|diff] ${c.gray('Git operations')}
-    ${c.purple('/init')}                  ${c.gray('Show setup guide')}
+${c.bold('Swarm Mode')}
+  ${c.purple('/swarm')}       Toggle swarm mode
+  ${c.purple('/swarm-setup')} Show swarm setup guidance
+  ${c.purple('/swarm-config')} Configure swarm settings
+  ${c.purple('/swarm-stop')}  Emergency stop all agents
 
-  ${c.bold('General')}
-    ${c.purple('/status')}                ${c.gray('Show current configuration')}
-    ${c.purple('/help')}                  ${c.gray('Show this help')}
-    ${c.purple('/uninstall')}             ${c.gray('Uninstall Velix CLI from your system')}
-    ${c.purple('/exit')}                  ${c.gray('Quit Velix CLI')}
+${c.bold('Tools')}
+  ${c.purple('/files')}      List project files
+  ${c.purple('/search')}      Search in project files
+  ${c.purple('/read')}       Read a file
+  ${c.purple('/shell')}      Execute a shell command
+  ${c.purple('/git')}        Git operations
+
+${c.bold('General')}
+  ${c.purple('/status')}     Show current configuration
+  ${c.purple('/reset')}     Reset config to defaults
+  ${c.purple('/help')}       Show this help
+  ${c.purple('/exit')}       Quit
 `);
 }
 
-async function handleConfig(args: string[], rl: readline.Interface): Promise<void> {
+// ─── Config commands ─────────────────────────────────────────
+
+async function handleConfig(args: string[]): Promise<void> {
     if (args.length >= 2) {
-        // Direct set: /config <provider> <key>
         const provider = args[0] as ProviderID;
         const key = args[1];
         if (!PROVIDERS.find(p => p.id === provider)) {
             console.log(c.red(`\n  Unknown provider: ${provider}`));
-            console.log(c.gray(`  Available: ${PROVIDERS.map(p => p.id).join(', ')}`));
             return;
         }
         setApiKey(provider, key);
@@ -492,46 +571,37 @@ async function handleConfig(args: string[], rl: readline.Interface): Promise<voi
         return;
     }
 
-    console.log(`\n${c.bold('  API Key Configuration')}`);
-    console.log(DIVIDER);
+    section('API Key Configuration');
     for (const provider of PROVIDERS) {
         const key = getApiKey(provider.id);
         const status = key ? c.green('✓ configured') : c.red('✗ not set');
-        const envHint = c.gray(`(env: ${provider.envVar})`);
-        console.log(`  ${c.bold(provider.name.padEnd(25))} ${status}  ${envHint}`);
+        console.log(`  ${c.bold(provider.name.padEnd(20))} ${status}  ${c.dim(`(${provider.envVar})`)}`);
     }
     console.log();
-    console.log(`  ${c.gray('Set a key: /config <provider> <api-key>')}`);
-    console.log(`  ${c.gray('Or set environment variables listed above.')}`);
-    console.log(`  ${c.gray(`Example: /config claude sk-ant-api...`)}`);
+    console.log(c.gray('  Usage: /config <provider> <api-key>'));
 }
 
-async function handleModelSwitch(args: string[], rl: readline.Interface): Promise<void> {
+async function handleModelSwitch(args: string[]): Promise<void> {
     const { provider } = getCurrentProvider();
     const providerDef = PROVIDERS.find(p => p.id === provider)!;
 
     if (args.length > 0) {
         const model = args[0];
-        if (!providerDef.models.includes(model)) {
-            console.log(c.yellow(`\n  Warning: "${model}" is not a known model for ${providerDef.name}.`));
-            console.log(c.gray(`  Known models: ${providerDef.models.join(', ')}`));
-            console.log(c.gray(`  Setting it anyway in case it's a custom model.`));
-        }
         saveConfig({ model });
         console.log(c.green(`\n  Switched to model: ${model}`));
         return;
     }
 
-    console.log(`\n${c.bold(`  Available models for ${providerDef.name}:`)}`);
+    section(`Available models for ${providerDef.name}`);
     const config = loadConfig();
     for (const model of providerDef.models) {
         const current = model === config.model ? c.green(' (current)') : '';
         console.log(`    ${c.cyan(model)}${current}`);
     }
-    console.log(`\n  ${c.gray('Usage: /model <model-name>')}`);
+    console.log(c.gray('\n  Usage: /model <model-name>'));
 }
 
-async function handleProviderSwitch(args: string[], rl: readline.Interface): Promise<void> {
+async function handleProviderSwitch(args: string[]): Promise<void> {
     if (args.length > 0) {
         const providerId = args[0] as ProviderID;
         try {
@@ -540,107 +610,44 @@ async function handleProviderSwitch(args: string[], rl: readline.Interface): Pro
             console.log(c.green(`\n  Switched to ${formatProvider(provider, model)}`));
         } catch (err) {
             console.log(c.red(`\n  ${err}`));
-            console.log(c.gray(`  Available: ${PROVIDERS.map(p => p.id).join(', ')}`));
         }
         return;
     }
 
-    console.log(`\n${c.bold('  Available AI Providers:')}`);
+    section('Available AI Providers');
     const config = loadConfig();
     for (const p of PROVIDERS) {
         const current = p.id === config.provider ? c.green(' (current)') : '';
         const hasKey = getApiKey(p.id) ? c.green('✓') : c.red('✗');
         console.log(`    ${hasKey} ${c.bold(p.id.padEnd(12))} ${c.gray(p.name)}${current}`);
     }
-    console.log(`\n  ${c.gray('Usage: /provider <provider-id>')}`);
+    console.log(c.gray('\n  Usage: /provider <provider-id>'));
+}
+
+// ─── Swarm config ─────────────────────────────────────────────
+
+function printSwarmSetup(): void {
+    const config = loadConfig();
+    section('Swarm Setup');
+    console.log(`  ${c.gray('Strategy:')} ${c.cyan(config.swarm.strategy)}`);
+    console.log(`  ${c.gray('Max agents:')} ${c.cyan(String(config.swarm.maxAgents))}`);
+    console.log(`  ${c.gray('Specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
+    console.log();
+    console.log(c.gray('  Use /swarm-config <key> <value> to change settings.'));
+    console.log(c.gray('  Use /swarm-config reset to restore defaults.'));
 }
 
 type SwarmSettings = ReturnType<typeof loadConfig>['swarm'];
 type SwarmSettingKey = keyof SwarmSettings;
 
-const SWARM_SETTING_HELP: Array<{ key: SwarmSettingKey; description: string; example: string }> = [
-    { key: 'strategy', description: 'Team planning style: fast, balanced, or thorough', example: 'balanced' },
-    { key: 'maxAgents', description: 'Maximum worker agents running at once', example: '4' },
-    { key: 'maxRuntime', description: 'Total swarm runtime budget in milliseconds', example: '600000' },
-    { key: 'maxStepsPerAgent', description: 'Maximum tool-loop steps each worker can take', example: '12' },
-    { key: 'maxFollowUpTasks', description: 'Maximum extra tasks the coordinator can add after reviews', example: '6' },
-    { key: 'safeMode', description: 'Preview-oriented mode that blocks risky execution', example: 'true' },
-    { key: 'autoApplyChanges', description: 'Apply write/edit actions automatically', example: 'true' },
-    { key: 'allowShell', description: 'Allow workers to run shell commands', example: 'true' },
-    { key: 'coordinatorReview', description: 'Let the coordinator review each worker batch and add follow-up work', example: 'true' },
-    { key: 'validateBuild', description: 'Run build validation after swarm execution', example: 'true' },
-    { key: 'validateTests', description: 'Run test validation after swarm execution', example: 'false' },
-    { key: 'specialistRoles', description: 'Comma-separated worker roles the coordinator can assign', example: 'implementer,tester,reviewer,debugger' },
-    { key: 'plannerModel', description: 'Override model used for the planning pass', example: 'claude-sonnet-4-6' },
-    { key: 'coordinatorModel', description: 'Override model used by the coordinator review pass', example: 'claude-sonnet-4-6' },
-    { key: 'workerModel', description: 'Override model used by worker agents', example: 'claude-sonnet-4-6' },
-    { key: 'coordinatorProvider', description: 'AI provider for the coordinator (uses your API key for that provider)', example: 'chatgpt' },
-    { key: 'workerProvider', description: 'AI provider for worker agents (uses your API key for that provider)', example: 'deepseek' },
-    { key: 'buildCommand', description: 'Override the build validation command', example: 'npm run build' },
-    { key: 'testCommand', description: 'Override the test validation command', example: 'npm test' },
-    { key: 'dryRunMode', description: 'Never apply file changes, only simulate them', example: 'false' },
-    { key: 'workerCLI', description: 'Reserved worker backend label for future external workers', example: 'claude' },
+const SWARM_SETTINGS: Array<{ key: SwarmSettingKey; desc: string; ex: string }> = [
+    { key: 'strategy', desc: 'Planning style', ex: 'balanced' },
+    { key: 'maxAgents', desc: 'Max concurrent agents', ex: '4' },
+    { key: 'specialistRoles', desc: 'Worker roles', ex: 'builder,reviewer' },
+    { key: 'safeMode', desc: 'Preview-only mode', ex: 'true' },
+    { key: 'coordinatorReview', desc: 'Coordinator reviews results', ex: 'true' },
+    { key: 'validateBuild', desc: 'Run build after swarm', ex: 'true' },
 ];
-
-function parseBoolean(value: string): boolean | null {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return null;
-}
-
-function parseSpecialistRoles(value: string): SwarmSettings['specialistRoles'] | null {
-    const roles = value
-        .split(',')
-        .map(item => item.trim())
-        .filter(Boolean);
-    if (roles.length === 0) return null;
-    if (!roles.every(role => SPECIALIST_ROLES.includes(role as typeof SPECIALIST_ROLES[number]))) {
-        return null;
-    }
-    return Array.from(new Set(roles)) as SwarmSettings['specialistRoles'];
-}
-
-function formatSwarmSettingValue(value: unknown): string {
-    if (Array.isArray(value)) return value.join(', ');
-    if (value === '') return '(auto)';
-    return String(value);
-}
-
-function printSwarmSetup(): void {
-    const config = loadConfig();
-    console.log(`\n${c.bold('  Swarm Setup')}`);
-    console.log(DIVIDER);
-    console.log(`  ${c.gray('Controller:')} ${c.bold('You')}`);
-    console.log(`  ${c.gray('Coordinator:')} ${c.cyan('Plans the task, dispatches specialists, reviews results, and decides follow-up work')}`);
-    console.log(`  ${c.gray('Workers:')} ${c.cyan('Builder, implementer, tester, reviewer, scouter, debugger, architect, refactorer, documenter')}`);
-    console.log();
-    console.log(`  ${c.gray('Current strategy:')} ${c.cyan(config.swarm.strategy)}`);
-    console.log(`  ${c.gray('Current specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
-    console.log(`  ${c.gray('Max workers at once:')} ${c.cyan(String(config.swarm.maxAgents))}`);
-    console.log(`  ${c.gray('Coordinator follow-up cap:')} ${c.cyan(String(config.swarm.maxFollowUpTasks))}`);
-    console.log(`  ${c.gray('Current worker model:')} ${c.cyan(config.swarm.workerModel || '(inherits main model)')}`);
-    console.log(`  ${c.gray('Current coordinator model:')} ${c.cyan(config.swarm.coordinatorModel || '(inherits main model)')}`);
-    console.log(`  ${c.gray('Coordinator provider:')} ${c.cyan(config.swarm.coordinatorProvider || '(inherits main provider)')}`);
-    console.log(`  ${c.gray('Worker provider:')} ${c.cyan(config.swarm.workerProvider || '(inherits main provider)')}`);
-    console.log(`  ${c.gray('Build validation command:')} ${c.cyan(config.swarm.buildCommand || '(auto: npm run build if available)')}`);
-    console.log(`  ${c.gray('Test validation command:')} ${c.cyan(config.swarm.testCommand || '(auto: npm test if available)')}`);
-    console.log();
-    console.log(`  ${c.bold('Recommended starter profile')}`);
-    console.log(`    ${c.cyan('/swarm-config strategy balanced')}`);
-    console.log(`    ${c.cyan('/swarm-config maxAgents 4')}`);
-    console.log(`    ${c.cyan('/swarm-config maxFollowUpTasks 6')}`);
-    console.log(`    ${c.cyan('/swarm-config specialistRoles builder,reviewer,scouter')}`);
-    console.log(`    ${c.cyan('/swarm-config coordinatorReview true')}`);
-    console.log(`    ${c.cyan('/swarm-config validateBuild true')}`);
-    console.log(`    ${c.cyan('/swarm-config autoApplyChanges true')}`);
-    console.log();
-    console.log(`  ${c.bold('All swarm settings')}`);
-    for (const item of SWARM_SETTING_HELP) {
-        console.log(`    ${c.purple(item.key.padEnd(18))} ${c.gray(item.description)} ${c.dim(`(example: ${item.example})`)}`);
-    }
-    console.log();
-    console.log(`  ${c.gray('Use /swarm-config <key> <value> to change a setting, or /swarm-config reset to restore defaults.')}`);
-}
 
 function handleSwarmConfig(args: string[]): void {
     const config = loadConfig();
@@ -655,177 +662,64 @@ function handleSwarmConfig(args: string[]): void {
 
     if (args.length >= 2) {
         const key = args[0] as SwarmSettingKey;
-        const rawValue = args.slice(1).join(' ');
-
-        if (!SWARM_SETTING_HELP.some(item => item.key === key)) {
-            console.log(c.red(`\n  Unknown setting: ${key}`));
-            console.log(c.gray('  Type /swarm-config to list valid settings.'));
-            return;
-        }
-
-        switch (key) {
-            case 'maxAgents':
-            case 'maxRuntime':
-            case 'maxStepsPerAgent':
-            case 'maxFollowUpTasks': {
-                const numeric = parseInt(rawValue, 10);
-                if (!Number.isFinite(numeric) || numeric <= 0) {
-                    console.log(c.red(`\n  ${key} must be a positive number.`));
-                    return;
-                }
-                config.swarm[key] = numeric as never;
-                break;
-            }
-            case 'safeMode':
-            case 'autoApplyChanges':
-            case 'allowShell':
-            case 'coordinatorReview':
-            case 'validateBuild':
-            case 'validateTests':
-            case 'dryRunMode': {
-                const parsed = parseBoolean(rawValue);
-                if (parsed == null) {
-                    console.log(c.red(`\n  ${key} must be true or false.`));
-                    return;
-                }
-                config.swarm[key] = parsed as never;
-                break;
-            }
-            case 'strategy':
-                if (!['fast', 'balanced', 'thorough'].includes(rawValue)) {
-                    console.log(c.red(`\n  strategy must be one of: fast, balanced, thorough.`));
-                    return;
-                }
-                config.swarm.strategy = rawValue as SwarmSettings['strategy'];
-                break;
-            case 'specialistRoles': {
-                const parsed = parseSpecialistRoles(rawValue);
-                if (!parsed) {
-                    console.log(c.red(`\n  specialistRoles must be a comma-separated list from: ${SPECIALIST_ROLES.join(', ')}`));
-                    return;
-                }
-                config.swarm.specialistRoles = parsed;
-                break;
-            }
-            case 'plannerModel':
-            case 'coordinatorModel':
-            case 'workerModel':
-            case 'coordinatorProvider':
-            case 'workerProvider':
-            case 'workerCLI':
-            case 'buildCommand':
-            case 'testCommand':
-                config.swarm[key] = rawValue as never;
-                break;
+        const value = args.slice(1).join(' ');
+        
+        if (key === 'specialistRoles') {
+            const roles = value.split(',').map(r => r.trim()).filter(Boolean);
+            config.swarm.specialistRoles = roles as never;
+        } else if (key === 'maxAgents' || key === 'maxFollowUpTasks') {
+            config.swarm[key] = parseInt(value, 10) as never;
+        } else if (key === 'safeMode' || key === 'coordinatorReview' || key === 'validateBuild') {
+            config.swarm[key] = (value === 'true') as never;
+        } else if (key === 'strategy') {
+            config.swarm.strategy = value as never;
+        } else {
+            config.swarm[key] = value as never;
         }
 
         saveConfig(config);
         swarmOrchestrator = null;
-        console.log(c.green(`\n  Swarm config updated: ${key} = ${rawValue}`));
+        console.log(c.green(`\n  Updated: ${key} = ${value}`));
         return;
     }
 
-    console.log(`\n${c.bold('  Swarm Configuration')}`);
-    console.log(DIVIDER);
-    for (const item of SWARM_SETTING_HELP) {
-        const value = formatSwarmSettingValue(config.swarm[item.key]);
-        console.log(`  ${c.gray(item.key + ':')} ${c.cyan(value)} ${c.gray(`— ${item.description}`)}`);
+    section('Swarm Configuration');
+    for (const s of SWARM_SETTINGS) {
+        const value = config.swarm[s.key];
+        const valStr = Array.isArray(value) ? value.join(', ') : String(value);
+        console.log(`  ${c.purple(s.key.padEnd(18))} ${c.cyan(valStr)}  ${c.dim(s.desc)}`);
     }
-    console.log();
-    console.log(`  ${c.gray('Usage: /swarm-config <key> <value>')}`);
-    console.log(`  ${c.gray('Reset defaults: /swarm-config reset')}`);
-    console.log(`  ${c.gray(`Valid specialist roles: ${SPECIALIST_ROLES.join(', ')}`)}`);
+    console.log(c.gray('\n  Usage: /swarm-config <key> <value>'));
 }
 
-function printAgents(): void {
-    if (!swarmOrchestrator) {
-        console.log(c.gray('\n  No active swarm session. Start one with /swarm, then run a task.'));
-        return;
-    }
-
-    const agents = swarmOrchestrator.getAgents();
-    if (agents.length === 0) {
-        console.log(c.gray('\n  No agents have been created yet. Send a task in swarm mode first.'));
-        return;
-    }
-
-    console.log(`\n${c.bold('  Swarm Agents')}`);
-    console.log(DIVIDER);
-    for (const agent of agents) {
-        const statusColor = agent.status === 'completed' ? c.green
-            : agent.status === 'failed' ? c.red
-            : agent.status === 'working' ? c.yellow
-            : c.gray;
-        const statusLabel = statusColor(agent.status);
-        console.log(`  ${c.bold(agent.role.padEnd(14))} ${c.gray(agent.id)}  ${statusLabel}`);
-        if (agent.currentTask) {
-            console.log(`    ${c.gray('Task:')} ${agent.currentTask.slice(0, 80)}`);
-        }
-    }
-    console.log();
-    console.log(`  ${c.gray('Message an agent: /msg <role-or-id> <message>')}`);
-}
-
-async function handleMessageAgent(args: string[]): Promise<void> {
-    if (!swarmOrchestrator) {
-        console.log(c.red('\n  No active swarm session. Activate swarm mode first with /swarm.'));
-        return;
-    }
-
-    if (args.length < 2) {
-        console.log(c.gray('\n  Usage: /msg <agent-role-or-id> <message>'));
-        console.log(c.gray('  Example: /msg reviewer Is the code quality acceptable?'));
-        console.log(c.gray('  Use /agents to see available agents.'));
-        return;
-    }
-
-    const agentId = args[0];
-    const message = args.slice(1).join(' ');
-
-    const spinner = new Spinner('Messaging agent', 'pulse');
-    process.stdout.write('\n');
-    spinner.start();
-
-    try {
-        const response = await swarmOrchestrator.messageAgent(agentId, message);
-        spinner.stop(`${c.gray('Agent responded')}`);
-        console.log();
-        console.log(`  ${c.boldPurple(agentId)} ${c.gray('→')}`);
-        console.log(renderMarkdown(response));
-        console.log();
-    } catch (err) {
-        spinner.stop();
-        console.log(c.red(`\n  ${err}`));
-    }
-}
+// ─── Status ──────────────────────────────────────────────────
 
 function printStatus(): void {
     const { provider, model } = getCurrentProvider();
     const config = loadConfig();
 
-    console.log(`\n${c.bold('  Velix Status')}`);
-    console.log(DIVIDER);
-    console.log(`  ${c.gray('Provider:')}    ${formatProvider(provider, model)}`);
-    console.log(`  ${c.gray('API Key:')}     ${getApiKey() ? c.green('configured') : c.red('not set')}`);
-    console.log(`  ${c.gray('Project:')}     ${c.blue(process.cwd())}`);
-    console.log(`  ${c.gray('Swarm Mode:')}  ${swarmMode ? c.yellow('ON') : c.gray('OFF')}`);
-    console.log(`  ${c.gray('Swarm Team:')}  ${c.cyan(`${config.swarm.strategy} · ${config.swarm.maxAgents} workers max · ${config.swarm.coordinatorReview ? 'coordinator review on' : 'coordinator review off'}`)}`);
-    console.log(`  ${c.gray('Specialists:')} ${c.cyan(config.swarm.specialistRoles.join(', '))}`);
-    console.log(`  ${c.gray('Swarm Safety:')} ${c.cyan(`${config.swarm.safeMode ? 'safe mode' : 'live mode'} · apply=${config.swarm.autoApplyChanges} · shell=${config.swarm.allowShell}`)}`);
-    console.log(`  ${c.gray('Validation:')}  ${c.cyan(`build=${config.swarm.validateBuild ? (config.swarm.buildCommand || 'auto') : 'off'} · test=${config.swarm.validateTests ? (config.swarm.testCommand || 'auto') : 'off'}`)}`);
-    console.log(`  ${c.gray('History:')}     ${messageHistory.length} messages`);
+    section('Status');
+    console.log(`  ${c.gray('Provider:')}   ${formatProvider(provider, model)}`);
+    console.log(`  ${c.gray('API Key:')}    ${getApiKey() ? c.green('configured') : c.red('not set')}`);
+    console.log(`  ${c.gray('Project:')}   ${c.blue(process.cwd())}`);
+    console.log(`  ${c.gray('Mode:')}       ${completionMode === 'build' ? c.green(completionMode) : completionMode === 'plan' ? c.yellow(completionMode) : c.red(completionMode)}`);
+    console.log(`  ${c.gray('Auto-apply:')} ${autoApply ? c.green('ON') : c.yellow('OFF')}`);
+    console.log(`  ${c.gray('Approval:')}  ${approvalMode ? c.green('ON (ask)') : c.yellow('OFF (auto)')}`);
+    console.log(`  ${c.gray('Swarm:')}      ${swarmMode ? c.yellow('ON') : c.gray('OFF')}`);
+    console.log(`  ${c.gray('History:')}   ${messageHistory.length} messages`);
 
-    // Configured providers
     const configured = PROVIDERS.filter(p => getApiKey(p.id));
-    console.log(`  ${c.gray('Providers:')}   ${configured.map(p => c.green(p.id)).join(', ') || c.red('none')}`);
+    console.log(`  ${c.gray('Keys set:')}   ${configured.map(p => c.green(p.id)).join(', ') || c.red('none')}`);
 }
+
+// ─── Tools ──────────────────────────────────────────────────
 
 function handleFiles(args: string[]): void {
     const dir = args[0] || process.cwd();
     try {
         const files = listDir(dir);
-        console.log(`\n  ${c.bold('Files in')} ${c.blue(dir)}`);
-        for (const file of files) {
+        section(`Files in ${dir}`);
+        for (const file of files.slice(0, 50)) {
             const icon = file.endsWith('/') ? c.blue('📁') : c.gray('  ');
             console.log(`  ${icon} ${file}`);
         }
@@ -839,20 +733,17 @@ function handleSearch(args: string[]): void {
         console.log(c.gray('\n  Usage: /search <pattern>'));
         return;
     }
-
     const pattern = args.join(' ');
     console.log(c.gray(`\n  Searching for "${pattern}"...`));
-
     const matches = searchInFiles(process.cwd(), pattern, 20);
     if (matches.length === 0) {
         console.log(c.yellow('  No matches found.'));
         return;
     }
-
     for (const match of matches) {
-        console.log(`  ${c.blue(match.file)}${c.gray(`:${match.line}:${match.column}`)}  ${match.text.trim().slice(0, 80)}`);
+        console.log(`  ${c.blue(match.file)}:${c.gray(String(match.line))}  ${match.text.trim().slice(0, 60)}`);
     }
-    console.log(c.gray(`\n  ${matches.length} match(es) found`));
+    console.log(c.gray(`\n  ${matches.length} matches`));
 }
 
 function handleShell(args: string[]): void {
@@ -860,35 +751,27 @@ function handleShell(args: string[]): void {
         console.log(c.gray('\n  Usage: /shell <command>'));
         return;
     }
-
     const command = args.join(' ');
     console.log(c.gray(`\n  $ ${command}`));
     const result = execShell(command, process.cwd());
     if (result.stdout) console.log(result.stdout);
     if (result.stderr) console.log(c.red(result.stderr));
-    if (result.exitCode !== 0) {
-        console.log(c.yellow(`  Exit code: ${result.exitCode}`));
-    }
+    if (result.exitCode !== 0) console.log(c.yellow(`  Exit: ${result.exitCode}`));
 }
 
 function handleGit(args: string[]): void {
     const subcmd = args[0] || 'status';
     switch (subcmd) {
         case 'status':
-            console.log(`\n${c.bold('  Git Status')}`);
-            console.log(gitStatus(process.cwd()) || c.green('  Clean working tree'));
+            console.log(gitStatus(process.cwd()) || c.green('  Clean'));
             break;
         case 'log':
-            console.log(`\n${c.bold('  Git Log')}`);
             console.log(gitLog(process.cwd(), parseInt(args[1]) || 10));
             break;
         case 'diff':
-            console.log(`\n${c.bold('  Git Diff')}`);
-            const diff = gitDiff(process.cwd(), args[1] === '--staged');
-            console.log(diff || c.gray('  No changes'));
+            console.log(gitDiff(process.cwd(), args[1] === '--staged') || c.gray('  No changes'));
             break;
         default:
-            // Pass through as git command
             const result = execShell(`git ${args.join(' ')}`, process.cwd());
             if (result.stdout) console.log(result.stdout);
             if (result.stderr) console.log(c.red(result.stderr));
@@ -897,109 +780,48 @@ function handleGit(args: string[]): void {
 
 function handleRead(args: string[]): void {
     if (args.length === 0) {
-        console.log(c.gray('\n  Usage: /read <file-path>'));
+        console.log(c.gray('\n  Usage: /read <file>'));
         return;
     }
-
     const filePath = path.resolve(process.cwd(), args[0]);
     try {
         const content = readFile(filePath);
-        const ext = path.extname(filePath).slice(1);
-        console.log(`\n${c.gray(`  ┌─ ${args[0]} ` + '─'.repeat(Math.max(0, 50 - args[0].length)))}`);
         const lines = content.split('\n');
-        for (let i = 0; i < Math.min(lines.length, 100); i++) {
-            console.log(`${c.gray(`  │ ${String(i + 1).padStart(4)} `)}${lines[i]}`);
+        section(args[0]);
+        for (let i = 0; i < Math.min(lines.length, 80); i++) {
+            console.log(c.gray(`${String(i + 1).padStart(4)} │`) + ` ${lines[i]}`);
         }
-        if (lines.length > 100) {
-            console.log(c.gray(`  │ ... (${lines.length - 100} more lines)`));
-        }
-        console.log(c.gray('  └' + '─'.repeat(55)));
+        if (lines.length > 80) console.log(c.gray(`  ... ${lines.length - 80} more lines`));
     } catch (err) {
-        console.log(c.red(`\n  Error reading file: ${err}`));
+        console.log(c.red(`\n  Error: ${err}`));
     }
 }
 
 function printHistory(): void {
     if (messageHistory.length === 0) {
-        console.log(c.gray('\n  No conversation history.'));
+        console.log(c.gray('\n  No history.'));
         return;
     }
-
-    console.log(`\n${c.bold('  Conversation History')} ${c.gray(`(${messageHistory.length} messages)`)}`);
-    console.log(DIVIDER);
-    for (const msg of messageHistory.slice(-20)) {
+    section(`History (${messageHistory.length} messages)`);
+    for (const msg of messageHistory.slice(-10)) {
         const role = msg.role === 'user' ? c.blue('you') : c.purple('velix');
-        const preview = msg.content.slice(0, 100).replace(/\n/g, ' ');
-        console.log(`  ${role}: ${c.gray(preview)}${msg.content.length > 100 ? '...' : ''}`);
+        const preview = msg.content.slice(0, 80).replace(/\n/g, ' ');
+        console.log(`  ${role}: ${c.gray(preview)}${msg.content.length > 80 ? '...' : ''}`);
     }
 }
 
-function compactHistory(): void {
-    if (messageHistory.length <= 4) {
-        console.log(c.gray('\n  History is already compact.'));
+function printAgents(): void {
+    if (!swarmOrchestrator) {
+        console.log(c.gray('\n  No active swarm. Use /swarm first.'));
         return;
     }
-
-    // Keep last 4 messages, summarize the rest
-    const kept = messageHistory.slice(-4);
-    const dropped = messageHistory.length - 4;
-    messageHistory = kept;
-    console.log(c.green(`\n  Compacted history: dropped ${dropped} older messages, kept last 4.`));
-}
-
-async function handleUninstall(rl: readline.Interface): Promise<void> {
-    const isBrew = execShell('brew list velix 2>/dev/null', process.cwd()).exitCode === 0;
-    const uninstallCmd = isBrew
-        ? 'brew uninstall velix && brew untap cliclye/velix'
-        : 'npm uninstall -g velix-cli';
-
-    console.log(`\n${c.bold('  Uninstall Velix CLI')}`);
-    console.log(DIVIDER);
-    console.log(`  ${c.gray('Detected:')} ${isBrew ? 'Homebrew' : 'npm'}`);
-    console.log(`  ${c.gray('Command:')}  ${c.cyan(uninstallCmd)}`);
-    console.log();
-
-    await new Promise<void>((resolve) => {
-        rl.question(`  ${c.yellow('Uninstall Velix? (y/N): ')}`, (answer) => {
-            if (answer.trim().toLowerCase() === 'y') {
-                console.log(c.gray('\n  Running uninstall...'));
-                const result = execShell(uninstallCmd, process.cwd());
-                if (result.exitCode === 0) {
-                    console.log(c.green('\n  Velix CLI uninstalled successfully. Goodbye!'));
-                    process.exit(0);
-                } else {
-                    console.log(c.red(`\n  Uninstall failed.\n  ${result.stderr || result.stdout}`));
-                }
-            } else {
-                console.log(c.gray('\n  Uninstall cancelled.'));
-            }
-            resolve();
-        });
-    });
-}
-
-function handleInit(): void {
-    console.log(`
-${c.boldPurple('  Getting Started with Velix CLI')}
-${DIVIDER}
-
-  ${c.bold('1. Configure an API key:')}
-     ${c.cyan('/config claude sk-ant-api03-...')}
-     ${c.gray('Or set env: export ANTHROPIC_API_KEY=sk-...')}
-
-  ${c.bold('2. Switch providers:')}
-     ${c.cyan('/provider chatgpt')}
-     ${c.cyan('/model gpt-4o')}
-
-  ${c.bold('3. Start chatting:')}
-     ${c.gray('Just type your message and press Enter.')}
-
-  ${c.bold('4. Use swarm mode for complex tasks:')}
-     ${c.cyan('/swarm')}
-     ${c.gray('Then describe a multi-step task.')}
-     ${c.gray('Agents will plan, implement, test, and review.')}
-
-  ${c.bold('Available Providers:')}
-${PROVIDERS.map(p => `     ${c.cyan(p.id.padEnd(12))} ${c.gray(p.name)}`).join('\n')}
-`);
+    const agents = swarmOrchestrator.getAgents();
+    section('Swarm Agents');
+    for (const agent of agents) {
+        const statusColor = agent.status === 'completed' ? c.green
+            : agent.status === 'failed' ? c.red
+            : agent.status === 'working' ? c.yellow
+            : c.gray;
+        console.log(`  ${c.bold(agent.role.padEnd(12))} ${statusColor(agent.status)}`);
+    }
 }

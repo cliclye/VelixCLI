@@ -10,7 +10,7 @@ const MODEL_ID_MAP: Record<string, string> = {
     'claude-sonnet-4-6': 'claude-sonnet-4-20250514',
     'claude-opus-4-5': 'claude-opus-4-5-20251101',
     'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
-    'gemini-2.5-pro': 'gemini-2.5-pro-preview-06-05',
+    'gemini-2.5-pro': 'gemini-2.5-pro',
     'gemini-2.0-flash': 'gemini-2.0-flash-001',
 };
 
@@ -81,6 +81,12 @@ export async function sendMessage(params: SendMessageParams): Promise<string> {
         });
 
         if (!res.ok) {
+            if (res.status === 429) {
+                throw new Error('Rate limit exceeded. Please try again later.');
+            }
+            if (res.status === 401) {
+                throw new Error('Invalid API key or authentication failed.');
+            }
             const err = await res.text();
             throw new Error(`Anthropic API error (${res.status}): ${err}`);
         }
@@ -112,6 +118,9 @@ export async function sendMessage(params: SendMessageParams): Promise<string> {
         });
 
         if (!res.ok) {
+            if (res.status === 429) {
+                throw new Error('Quota exceeded. No balance remaining.');
+            }
             const err = await res.text();
             throw new Error(`Google API error (${res.status}): ${err}`);
         }
@@ -149,6 +158,12 @@ export async function sendMessage(params: SendMessageParams): Promise<string> {
     });
 
     if (!res.ok) {
+        if (res.status === 429) {
+            throw new Error('Rate limit exceeded. Please try again later.');
+        }
+        if (res.status === 401) {
+            throw new Error('Invalid API key or authentication failed.');
+        }
         const err = await res.text();
         throw new Error(`${params.provider} API error (${res.status}): ${err}`);
     }

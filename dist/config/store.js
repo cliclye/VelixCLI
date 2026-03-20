@@ -30,7 +30,7 @@ export const DEFAULT_SWARM_SETTINGS = {
     testCommand: '',
     dryRunMode: false,
 };
-const DEFAULT_CONFIG = {
+export const DEFAULT_CONFIG = {
     provider: 'claude',
     model: 'claude-sonnet-4-6',
     apiKeys: {},

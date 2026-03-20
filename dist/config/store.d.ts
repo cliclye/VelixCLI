@@ -12,6 +12,7 @@ export interface VelixConfig {
     theme: 'default';
 }
 export declare const DEFAULT_SWARM_SETTINGS: SwarmConfig;
+export declare const DEFAULT_CONFIG: VelixConfig;
 export declare function loadConfig(): VelixConfig;
 export declare function saveConfig(config?: Partial<VelixConfig>): void;
 export declare function getApiKey(provider?: ProviderID): string | undefined;

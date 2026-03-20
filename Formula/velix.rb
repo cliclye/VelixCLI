@@ -1,18 +1,17 @@
 class Velix < Formula
-  desc "Multi-provider AI coding assistant with swarm orchestration"
+  desc "Velix AI CLI - Multi-provider AI coding assistant with swarm orchestration"
   homepage "https://github.com/cliclye/velix-cli"
-  url "https://registry.npmjs.org/velix-cli/-/velix-cli-0.1.0.tgz"
-  sha256 "2ac198409f8caf8ef5dcae0c84cc32732e5ec9ca48553df60d7508674e62c6c5"
+  url "https://registry.npmjs.org/velix-cli/-/velix-cli-0.2.0.tgz"
   license "MIT"
+  version "0.2.0"
 
-  depends_on "node@18"
+  depends_on "node@20"
 
   def install
-    system "npm", "install", *std_npm_args
-    bin.install_symlink Dir["#{libexec}/bin/*"]
+    system "npm", "install", "-g", "velix-cli@#{version}"
   end
 
   test do
-    assert_match "0.1.0", shell_output("#{bin}/velix --version")
+    system "#{bin}/velix", "--version"
   end
 end

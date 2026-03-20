@@ -1,6 +1,6 @@
 {
   "name": "velix-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Velix AI CLI - Multi-provider AI coding assistant with swarm orchestration",
   "type": "module",
   "bin": {
