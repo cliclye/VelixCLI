@@ -3,7 +3,8 @@
  */
 export declare function getWidth(): number;
 export declare function updateWidth(): void;
-export declare function stripAnsi(s: string): number;
+export declare function stripAnsi(s: string): string;
+export declare function ansiLen(s: string): number;
 declare const DIVIDER_CHARS: {
     light: string;
     heavy: string;

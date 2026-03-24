@@ -13,7 +13,10 @@ export function updateWidth() {
 updateWidth();
 process.stdout.on('resize', updateWidth);
 export function stripAnsi(s) {
-    return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+export function ansiLen(s) {
+    return stripAnsi(s).length;
 }
 // ─── Divider ─────────────────────────────────────────────────
 const DIVIDER_CHARS = {
@@ -84,7 +87,7 @@ export function statusBar(items) {
 // ─── Input hint ──────────────────────────────────────────────
 export function inputHint(text) {
     const width = getWidth();
-    const len = stripAnsi(text);
+    const len = ansiLen(text);
     const padding = Math.max(0, width - len - 1);
     process.stdout.write(`\r${' '.repeat(padding)}${c.dim(text)}`);
 }

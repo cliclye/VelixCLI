@@ -19,8 +19,12 @@ export function updateWidth(): void {
 updateWidth();
 process.stdout.on('resize', updateWidth);
 
-export function stripAnsi(s: string): number {
-    return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+export function stripAnsi(s: string): string {
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+export function ansiLen(s: string): number {
+    return stripAnsi(s).length;
 }
 
 // ─── Divider ─────────────────────────────────────────────────
@@ -112,7 +116,7 @@ export function statusBar(items: Array<{ label: string; value: string }>): void 
 
 export function inputHint(text: string): void {
     const width = getWidth();
-    const len = stripAnsi(text);
+    const len = ansiLen(text);
     const padding = Math.max(0, width - len - 1);
     process.stdout.write(`\r${' '.repeat(padding)}${c.dim(text)}`);
 }

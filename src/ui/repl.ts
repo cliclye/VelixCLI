@@ -16,9 +16,49 @@ import {
     execShell, gitStatus, gitDiff, gitLog, readProjectSources,
 } from '../services/tools/index.js';
 import { c, formatProvider, renderMarkdown } from './theme.js';
-import { Spinner, divider, getWidth, printUserMessage, printAssistantMessage, section, stripAnsi } from './components.js';
+import { Spinner, divider, getWidth, printUserMessage, printAssistantMessage, section, ansiLen } from './components.js';
 import { printSwarmActivity, formatElapsed } from './swarm-trace.js';
 import { SPECIALIST_ROLES } from '../services/swarm/types.js';
+
+// ─── Command Autocomplete ───────────────────────────────────────
+
+const COMMANDS = [
+    { cmd: '/help', desc: 'Show all slash commands' },
+    { cmd: '/config', desc: 'Configure API keys' },
+    { cmd: '/model', desc: 'Switch AI model' },
+    { cmd: '/provider', desc: 'Switch AI provider' },
+    { cmd: '/swarm', desc: 'Toggle swarm mode' },
+    { cmd: '/swarm-setup', desc: 'Show swarm setup guidance' },
+    { cmd: '/swarm-config', desc: 'Inspect or change swarm settings' },
+    { cmd: '/swarm-stop', desc: 'Emergency stop all agents' },
+    { cmd: '/status', desc: 'Show current configuration' },
+    { cmd: '/clear', desc: 'Clear conversation history' },
+    { cmd: '/history', desc: 'Show conversation history' },
+    { cmd: '/files', desc: 'List project files' },
+    { cmd: '/search', desc: 'Search in project files' },
+    { cmd: '/shell', desc: 'Execute a shell command' },
+    { cmd: '/git', desc: 'Git operations' },
+    { cmd: '/read', desc: 'Read a file' },
+    { cmd: '/mode', desc: 'Set mode (build/plan/debug)' },
+    { cmd: '/auto-apply', desc: 'Toggle auto-apply edits' },
+    { cmd: '/approval', desc: 'Toggle approval mode' },
+    { cmd: '/agents', desc: 'Show swarm agents' },
+    { cmd: '/reset', desc: 'Reset config to defaults' },
+    { cmd: '/exit', desc: 'Quit' },
+];
+
+function showCommandHint(input: string): void {
+    if (!input.startsWith('/')) return;
+    
+    const matches = COMMANDS.filter(cmd => cmd.cmd.startsWith(input.toLowerCase()));
+    if (matches.length === 0) return;
+    
+    console.log();
+    for (const m of matches.slice(0, 6)) {
+        console.log(c.gray(`  ${m.cmd.padEnd(18)} ${m.desc}`));
+    }
+    console.log();
+}
 
 // ─── State ──────────────────────────────────────────────────
 
@@ -38,21 +78,41 @@ async function promptYesNo(question: string, rl: readline.Interface): Promise<bo
     return new Promise((resolve) => {
         let selected = 0;
         const options = ['Yes', 'No'];
-        
+        let rendered = false;
+        const totalLines = 1 + options.length; // question + option lines
+
         const render = () => {
-            process.stdout.write('\r\x1b[2K'); // Clear line
+            if (rendered) {
+                // Move cursor up to overwrite previous render
+                process.stdout.write(`\x1b[${totalLines}A`);
+            }
+            // Clear and write question line
+            process.stdout.write('\x1b[2K');
             process.stdout.write(`  ${question}\n`);
+            // Clear and write each option line
             for (let i = 0; i < options.length; i++) {
+                process.stdout.write('\x1b[2K');
                 const arrow = i === selected ? c.green('▶') : ' ';
                 const highlight = i === selected ? c.bold : (s: string) => s;
-                console.log(`    ${arrow} ${highlight(options[i])}`);
+                process.stdout.write(`    ${arrow} ${highlight(options[i])}\n`);
             }
-            process.stdout.write('\r');
+            rendered = true;
         };
-        
+
         render();
-        
-        const handler = (ch: string | null, key: { name: string; sequence?: string }) => {
+
+        const cleanup = () => {
+            process.stdin.off('keypress', handler);
+            // Clear the prompt lines
+            process.stdout.write(`\x1b[${totalLines}A`);
+            for (let i = 0; i < totalLines; i++) {
+                process.stdout.write('\x1b[2K\n');
+            }
+            process.stdout.write(`\x1b[${totalLines}A`);
+        };
+
+        const handler = (_ch: string | null, key: { name: string; sequence?: string }) => {
+            if (!key) return;
             if (key.name === 'up' || key.name === 'k') {
                 selected = (selected - 1 + options.length) % options.length;
                 render();
@@ -60,16 +120,14 @@ async function promptYesNo(question: string, rl: readline.Interface): Promise<bo
                 selected = (selected + 1) % options.length;
                 render();
             } else if (key.name === 'enter') {
-                process.stdin.off('keypress', handler);
-                process.stdout.write('\x1b[2K\r'); // Clear prompts
+                cleanup();
                 resolve(selected === 0);
             } else if (key.name === 'escape' || key.name === 'q') {
-                process.stdin.off('keypress', handler);
-                process.stdout.write('\x1b[2K\r');
-                resolve(false); // Default to No on cancel
+                cleanup();
+                resolve(false);
             }
         };
-        
+
         process.stdin.on('keypress', handler);
     });
 }
@@ -93,6 +151,25 @@ export function startREPL(): void {
         output: process.stdout,
         prompt: getPrompt(),
         historySize: 200,
+        completer: (line: string) => {
+            if (!line.startsWith('/')) return [[], line];
+            
+            const matches = COMMANDS
+                .filter(cmd => cmd.cmd.toLowerCase().startsWith(line.toLowerCase()))
+                .map(cmd => cmd.cmd);
+            
+            if (matches.length === 0) return [[], line];
+            
+            // Show description for single match
+            if (matches.length === 1) {
+                const match = COMMANDS.find(entry => entry.cmd === matches[0]);
+                if (match) {
+                    process.stdout.write('\r\n' + c.gray(`  ${match.desc}`) + '\r\n');
+                }
+            }
+            
+            return [matches, line];
+        },
     });
 
     rl.on('line', async (input) => {
@@ -101,6 +178,11 @@ export function startREPL(): void {
         if (!trimmed) {
             rl.prompt();
             return;
+        }
+
+        // Show hint for partial slash commands (skip if it's an exact match)
+        if (trimmed.startsWith('/') && !COMMANDS.some(cmd => cmd.cmd === trimmed.toLowerCase().split(/\s+/)[0])) {
+            showCommandHint(trimmed);
         }
 
         // User message
@@ -146,9 +228,10 @@ export function startREPL(): void {
         process.exit(0);
     });
 
-    // Tab to cycle completion modes
+    // Tab to cycle completion modes (only when input line is empty so it doesn't
+    // conflict with readline's built-in tab-completion for slash commands)
     process.stdin.on('keypress', (_ch, key) => {
-        if (key && key.name === 'tab') {
+        if (key && key.name === 'tab' && !(rl as unknown as { line: string }).line) {
             const modes: CompletionMode[] = ['build', 'plan', 'debug'];
             const idx = modes.indexOf(completionMode);
             completionMode = modes[(idx + 1) % modes.length];
@@ -167,10 +250,8 @@ function getPrompt(): string {
 
 function printFooter(): void {
     console.log(divider('light'));
-    console.log(c.dim('  ? for shortcuts') + c.gray('                              ') + c.dim('Use meta+t to toggle thinking'));
-    console.log(); // Bottom margin
-    console.log(); // Bottom margin
-    console.log(); // Bottom margin
+    console.log(c.dim('  /help for commands') + c.gray('                           ') + c.dim('Tab to cycle modes'));
+    console.log();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -184,46 +265,60 @@ const BOX = {
 
 function printWelcome(): void {
     const { provider, model } = getCurrentProvider();
+    const apiKey = getApiKey();
     const width = getWidth();
     const innerWidth = Math.max(60, width - 2);
 
-    // Single column centered layout
+    const hasApiKey = !!apiKey;
+    const statusProvider = hasApiKey ? c.green(provider) : c.red(provider + ' (not configured)');
+    
     const lines = [
         '',
-        '                 Welcome back!                 ',
+        c.boldPurple('╔════════════════════╗'),
+        c.boldPurple('║    Velix CLI       ║'),
+        c.boldPurple('║  AI Coding Assist  ║'),
+        c.boldPurple('╚════════════════════╝'),
         '',
-        '      ██╗   ██╗███████╗██╗     ██╗██╗  ██╗      ',
-        '      ██║   ██║██╔════╝██║     ██║╚██╗██╔╝      ',
-        '      ██║   ██║█████╗  ██║     ██║ ╚███╔╝       ',
-        '      ╚██╗ ██╔╝██╔══╝  ██║     ██║ ██╔██╗       ',
-        '       ╚████╔╝ ███████╗███████╗██║██╔╝ ██╗      ',
-        '        ╚═══╝  ╚══════╝╚══════╝╚═╝╚═╝  ╚═╝      ',
-        '',
-        `                  ${c.boldCyan('Velix')}                   `,
-        `               ${c.gray(model)}               `,
-        `       ${c.blue('~' + process.cwd().replace(process.env.HOME || '/', ''))}       `,
+        `  ${c.cyan('Provider:')} ${statusProvider}`,
+        `  ${c.cyan('Model:')} ${c.gray(model)}`,
+        `  ${c.cyan('Path:')} ${c.blue('~' + process.cwd().replace(process.env.HOME || '/', ''))}`,
         '',
     ];
 
-    // Top border with title
     const title = c.bold(' Velix CLI ');
-    const titleLen = stripAnsi(title);
+    const titleLen = ansiLen(title);
     const leftBar = innerWidth - titleLen;
     const leftChars = Math.floor(leftBar / 2);
     const rightChars = leftBar - leftChars;
     console.log(c.gray(BOX.tl + BOX.h.repeat(leftChars) + title + BOX.h.repeat(rightChars) + BOX.tr));
     
     for (const line of lines) {
-        const len = stripAnsi(line);
-        const pad = Math.max(0, innerWidth - len);
-        const left = Math.floor(pad / 2);
-        const right = pad - left;
-        console.log(c.gray(BOX.v) + ' '.repeat(left) + line + ' '.repeat(right) + c.gray(BOX.v));
+        const lineLen = ansiLen(line);
+        const padRight = innerWidth - lineLen;
+        const padding = padRight > 0 ? padRight : 0;
+        console.log(c.gray(BOX.v) + line + ' '.repeat(padding) + c.gray(BOX.v));
     }
     
-    // Bottom border
     console.log(c.gray(BOX.bl + BOX.h.repeat(innerWidth) + BOX.br));
     console.log();
+    
+    // Quick tips for new users
+    if (!hasApiKey) {
+        console.log(c.yellow('  ⚠ No API key configured'));
+        console.log(c.gray('  ───────────────────────────'));
+        console.log(`  ${c.cyan('Quick start:')}`);
+        console.log(`    ${c.gray('# Set your API key:')}`);
+        console.log(`    velix --config claude sk-ant-api03-...`);
+        console.log();
+        console.log(`    ${c.gray('# Or use environment variable:')}`);
+        console.log(`    export ANTHROPIC_API_KEY=sk-...`);
+        console.log();
+        console.log(c.cyan('  Available providers:'));
+        for (const p of PROVIDERS.slice(0, 5)) {
+            console.log(`    ${c.bold(p.id.padEnd(10))} ${c.gray(p.name)}`);
+        }
+        console.log();
+    }
 }
 
 // ─── Chat ───────────────────────────────────────────────────
@@ -232,7 +327,14 @@ async function handleChat(input: string, rl: readline.Interface): Promise<void> 
     const config = loadConfig();
     const apiKey = getApiKey();
     if (!apiKey) {
-        console.log(c.red('\n  No API key configured. Run /config to set one.'));
+        console.log(c.red('\n  No API key configured.'));
+        console.log(c.gray('\n  To get started:'));
+        console.log(c.cyan(`    velix --config ${config.provider} <your-api-key>`));
+        console.log(c.gray('\n  Or set the environment variable:'));
+        console.log(c.cyan(`    export ${PROVIDERS.find(p => p.id === config.provider)?.envVar || 'ANTHROPIC_API_KEY'}=<your-key>`));
+        console.log(c.gray('\n  To switch providers:'));
+        console.log(c.cyan(`    velix --provider <provider>  (e.g., claude, chatgpt, gemini)`));
+        console.log();
         return;
     }
 
